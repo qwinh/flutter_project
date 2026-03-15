@@ -1,6 +1,6 @@
 // lib/views/album_add_view.dart
-// Create a new album. Pre-fills from the global selection pool.
-// On commit: inserts album + tags + images, clears pool.
+// Create a new album. If navigated from ImagesSelectedView, the selected
+// images pool is pre-filled. Commits create the album and clear the pool.
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -27,7 +27,7 @@ class _AlbumAddViewState extends State<AlbumAddView> {
   bool _isFavorite = false;
   List<int> _tagIds = [];
 
-  // Local snapshot of the selection pool used as preview
+  // Images that will go into the new album (taken from selection pool)
   List<AssetEntity> _previewEntities = [];
   bool _submitting = false;
 
@@ -35,10 +35,9 @@ class _AlbumAddViewState extends State<AlbumAddView> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      // Mirror the current selection pool as preview
       final sp = context.read<SelectionProvider>();
       setState(() => _previewEntities = List.of(sp.entities));
-      // Make sure tags are loaded for the picker
-      context.read<TagProvider>().load();
     });
   }
 
@@ -66,20 +65,21 @@ class _AlbumAddViewState extends State<AlbumAddView> {
 
     await ap.addAlbum(
       AlbumModel(
-        name: name,
-        description: _descCtrl.text.trim(),
-        isFavorite: _isFavorite,
-      ),
+          name: name,
+          description: _descCtrl.text.trim(),
+          isFavorite: _isFavorite),
       tagIds: _tagIds,
       assetIds: assetIds,
     );
 
+    // Clear the global selection pool after committing
     await sp.clearAll();
 
-    await NotificationService.instance.show(
-        'Album created', '"$name" created with ${assetIds.length} images.');
+    await NotificationService.instance.show('Album created', '"$name" created.');
 
-    if (mounted) context.pop();
+    if (mounted) {
+      context.pop();
+    }
   }
 
   Future<void> _pickTagsDialog() async {
@@ -115,16 +115,22 @@ class _AlbumAddViewState extends State<AlbumAddView> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          // ── Form fields ──────────────────────────────────────────────────
           TextField(
             controller: _nameCtrl,
-            decoration:
-                const InputDecoration(labelText: 'Album name *'),
+            decoration: const InputDecoration(
+              labelText: 'Album name *',
+              border: OutlineInputBorder(),
+            ),
             textCapitalization: TextCapitalization.sentences,
           ),
           const SizedBox(height: 12),
           TextField(
             controller: _descCtrl,
-            decoration: const InputDecoration(labelText: 'Description'),
+            decoration: const InputDecoration(
+              labelText: 'Description',
+              border: OutlineInputBorder(),
+            ),
             maxLines: 2,
             textCapitalization: TextCapitalization.sentences,
           ),
@@ -136,7 +142,7 @@ class _AlbumAddViewState extends State<AlbumAddView> {
             onChanged: (v) => setState(() => _isFavorite = v),
           ),
 
-          // Tags row
+          // ── Tags ─────────────────────────────────────────────────────────
           Row(
             children: [
               const Text('Tags:',
@@ -148,9 +154,8 @@ class _AlbumAddViewState extends State<AlbumAddView> {
                         style: TextStyle(color: Colors.grey))
                     : Wrap(
                         spacing: 4,
-                        children: tagNames
-                            .map((n) => Chip(label: Text(n)))
-                            .toList(),
+                        children:
+                            tagNames.map((n) => Chip(label: Text(n))).toList(),
                       ),
               ),
               TextButton.icon(
@@ -163,7 +168,7 @@ class _AlbumAddViewState extends State<AlbumAddView> {
 
           const Divider(height: 32),
 
-          // Image preview
+          // ── Image preview grid ───────────────────────────────────────────
           Row(
             children: [
               Text(
@@ -172,7 +177,12 @@ class _AlbumAddViewState extends State<AlbumAddView> {
               ),
               const Spacer(),
               TextButton.icon(
-                onPressed: () => context.push('/images'),
+                onPressed: () {
+                  // Navigate to images view; user selects more there.
+                  // The selection pool persists so they come back with
+                  // updated pool.
+                  context.push('/images');
+                },
                 icon: const Icon(Icons.add_photo_alternate_outlined),
                 label: const Text('Add more'),
               ),
@@ -207,13 +217,17 @@ class _AlbumAddViewState extends State<AlbumAddView> {
                 return Stack(
                   fit: StackFit.expand,
                   children: [
-                    AssetThumb(asset: e),
+                    AssetThumb(
+                      asset: e,
+                      onTap: () => setState(
+                          () => _previewEntities.removeAt(i)),
+                    ),
                     Positioned(
                       top: 2,
                       right: 2,
                       child: GestureDetector(
-                        onTap: () => setState(
-                            () => _previewEntities.removeAt(i)),
+                        onTap: () =>
+                            setState(() => _previewEntities.removeAt(i)),
                         child: const CircleAvatar(
                           radius: 10,
                           backgroundColor: Colors.black54,

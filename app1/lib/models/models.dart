@@ -6,34 +6,25 @@ class AlbumModel {
   final String name;
   final String description;
   final bool isFavorite;
-  final DateTime dateCreated;
-  final DateTime dateLatestModify;
 
-  AlbumModel({
+  const AlbumModel({
     this.id,
     required this.name,
     this.description = '',
     this.isFavorite = false,
-    DateTime? dateCreated,
-    DateTime? dateLatestModify,
-  })  : dateCreated = dateCreated ?? DateTime.now(),
-        dateLatestModify = dateLatestModify ?? DateTime.now();
+  });
 
   AlbumModel copyWith({
     int? id,
     String? name,
     String? description,
     bool? isFavorite,
-    DateTime? dateCreated,
-    DateTime? dateLatestModify,
   }) {
     return AlbumModel(
       id: id ?? this.id,
       name: name ?? this.name,
       description: description ?? this.description,
       isFavorite: isFavorite ?? this.isFavorite,
-      dateCreated: dateCreated ?? this.dateCreated,
-      dateLatestModify: dateLatestModify ?? this.dateLatestModify,
     );
   }
 
@@ -42,8 +33,6 @@ class AlbumModel {
         'name': name,
         'description': description,
         'is_favorite': isFavorite ? 1 : 0,
-        'date_created': dateCreated.toIso8601String(),
-        'date_latest_modify': dateLatestModify.toIso8601String(),
       };
 
   factory AlbumModel.fromMap(Map<String, dynamic> m) => AlbumModel(
@@ -51,12 +40,6 @@ class AlbumModel {
         name: m['name'] as String,
         description: m['description'] as String? ?? '',
         isFavorite: (m['is_favorite'] as int? ?? 0) == 1,
-        dateCreated: m['date_created'] != null
-            ? DateTime.parse(m['date_created'] as String)
-            : DateTime.now(),
-        dateLatestModify: m['date_latest_modify'] != null
-            ? DateTime.parse(m['date_latest_modify'] as String)
-            : DateTime.now(),
       );
 }
 
@@ -90,5 +73,8 @@ class TagModel {
 /// The [assetId] is the AssetEntity.id from photo_manager.
 class ImageRecord {
   final String assetId;
+  // We keep a local path for display when asset is available.
+  // The assetId is the primary key stored in SQLite.
+
   const ImageRecord({required this.assetId});
 }
