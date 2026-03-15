@@ -47,8 +47,13 @@ class _AppRootState extends State<_AppRoot> {
   @override
   void initState() {
     super.initState();
-    // Keep SelectionCountNotifier in sync with SelectionProvider
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      // Eagerly load albums and tags so the filter sheet has data on first open.
+      context.read<AlbumProvider>().load();
+      context.read<TagProvider>().load();
+      // Load persisted selection.
+      context.read<SelectionProvider>().load();
+      // Keep SelectionCountNotifier in sync with SelectionProvider.
       final selProv = context.read<SelectionProvider>();
       final countNotifier = context.read<SelectionCountNotifier>();
       selProv.addListener(() => countNotifier.update(selProv.count));

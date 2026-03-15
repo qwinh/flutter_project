@@ -9,16 +9,12 @@ import '../db/database_helper.dart';
 enum SortOrder { dateDesc, dateAsc, nameAsc, nameDesc }
 
 class ImageFilterState {
-  /// Show only images that belong to at least one of these albums.
-  /// Empty = no include filter (all images pass).
   final Set<int> includeAlbumIds;
-
-  /// Hide images that belong to any of these albums.
-  /// Empty = no exclude filter.
   final Set<int> excludeAlbumIds;
-
-  /// Show only images in any favorite album.
   final bool onlyFavoriteAlbums;
+
+  /// When true, only show images that are in the current selection pool.
+  final bool hideSelected;
 
   final int? minWidth;
   final int? minHeight;
@@ -28,6 +24,7 @@ class ImageFilterState {
     this.includeAlbumIds = const {},
     this.excludeAlbumIds = const {},
     this.onlyFavoriteAlbums = false,
+    this.hideSelected = false,
     this.minWidth,
     this.minHeight,
     this.sortOrder = SortOrder.dateDesc,
@@ -38,10 +35,17 @@ class ImageFilterState {
       excludeAlbumIds.isNotEmpty ||
       onlyFavoriteAlbums;
 
+  bool get hasAnyFilter =>
+      hasAlbumFilter ||
+      hideSelected ||
+      minWidth != null ||
+      minHeight != null;
+
   ImageFilterState copyWith({
     Set<int>? includeAlbumIds,
     Set<int>? excludeAlbumIds,
     bool? onlyFavoriteAlbums,
+    bool? hideSelected,
     Object? minWidth = _sentinel,
     Object? minHeight = _sentinel,
     SortOrder? sortOrder,
@@ -50,6 +54,7 @@ class ImageFilterState {
       includeAlbumIds: includeAlbumIds ?? this.includeAlbumIds,
       excludeAlbumIds: excludeAlbumIds ?? this.excludeAlbumIds,
       onlyFavoriteAlbums: onlyFavoriteAlbums ?? this.onlyFavoriteAlbums,
+      hideSelected: hideSelected ?? this.hideSelected,
       minWidth: minWidth == _sentinel ? this.minWidth : minWidth as int?,
       minHeight: minHeight == _sentinel ? this.minHeight : minHeight as int?,
       sortOrder: sortOrder ?? this.sortOrder,
@@ -81,18 +86,15 @@ class DeviceImageProvider extends ChangeNotifier {
   Set<String> _excludeAssetIds = {};
   Set<String> _favoriteAssetIds = {};
 
+  // Injected from outside when onlySelected filter is active.
+  Set<String> _selectedAssetIds = {};
+
   Future<void> requestPermissionAndLoad() async {
     final result = await PhotoManager.requestPermissionExtend();
-    // hasAccess covers: authorized, limited (Android 14 partial), restricted.
-    // isAuth alone misses `limited` which is the common state on Android 14+
-    // when the user taps "Allow selected photos" or "Allow all photos".
     _permissionGranted = result.hasAccess;
     if (_permissionGranted) {
       await loadAll();
     } else {
-      // Permission permanently denied or not yet granted — open OS Settings
-      // so the user can manually enable it. Without this the button does nothing
-      // visible after the first rejection.
       await PhotoManager.openSetting();
       notifyListeners();
     }
@@ -125,6 +127,15 @@ class DeviceImageProvider extends ChangeNotifier {
     await _applyFilters();
   }
 
+  /// Call this whenever the selection changes and onlySelected is active,
+  /// so the filtered list stays in sync.
+  Future<void> updateSelectedIds(Set<String> selectedIds) async {
+    _selectedAssetIds = selectedIds;
+    if (_filterState.hideSelected) {
+      await _applyFilters();
+    }
+  }
+
   Future<void> refreshForAlbumFilter(Set<int> albumIds) async {
     _includeAssetIds = await _db.getAssetIdsForAlbums(albumIds);
     await _applyFilters();
@@ -138,7 +149,6 @@ class DeviceImageProvider extends ChangeNotifier {
   Future<void> _applyFilters() async {
     final f = _filterState;
 
-    // Refresh DB-backed sets only when they are actually needed.
     if (f.includeAlbumIds.isNotEmpty) {
       _includeAssetIds = await _db.getAssetIdsForAlbums(f.includeAlbumIds);
     }
@@ -151,22 +161,18 @@ class DeviceImageProvider extends ChangeNotifier {
 
     List<AssetEntity> result = List.of(_all);
 
-    // Include filter: image must be in at least one included album.
     if (f.includeAlbumIds.isNotEmpty) {
       result = result.where((a) => _includeAssetIds.contains(a.id)).toList();
     }
-
-    // Exclude filter: image must not be in any excluded album.
     if (f.excludeAlbumIds.isNotEmpty) {
       result = result.where((a) => !_excludeAssetIds.contains(a.id)).toList();
     }
-
-    // Favorite-albums filter (independent of include/exclude).
     if (f.onlyFavoriteAlbums) {
       result = result.where((a) => _favoriteAssetIds.contains(a.id)).toList();
     }
-
-    // Dimension filters.
+    if (f.hideSelected) {
+      result = result.where((a) => !_selectedAssetIds.contains(a.id)).toList();
+    }
     if (f.minWidth != null) {
       result = result.where((a) => a.width >= f.minWidth!).toList();
     }
@@ -174,7 +180,6 @@ class DeviceImageProvider extends ChangeNotifier {
       result = result.where((a) => a.height >= f.minHeight!).toList();
     }
 
-    // Sort.
     switch (f.sortOrder) {
       case SortOrder.dateDesc:
         result.sort((a, b) => b.createDateTime.compareTo(a.createDateTime));
@@ -194,8 +199,6 @@ class DeviceImageProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Clears cached DB-backed filter sets so the next [_applyFilters] call
-  /// re-fetches fresh data from the database.
   void invalidateFilterCache() {
     _includeAssetIds = {};
     _excludeAssetIds = {};

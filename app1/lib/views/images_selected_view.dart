@@ -13,8 +13,22 @@ import '../providers/selection_provider.dart';
 import '../services/notification_service.dart';
 import '../widgets/widgets.dart';
 
-class ImagesSelectedView extends StatelessWidget {
+class ImagesSelectedView extends StatefulWidget {
   const ImagesSelectedView({super.key});
+
+  @override
+  State<ImagesSelectedView> createState() => _ImagesSelectedViewState();
+}
+
+class _ImagesSelectedViewState extends State<ImagesSelectedView> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      context.read<SelectionProvider>().resolveEntities();
+    });
+  }
+
 
   @override
   Widget build(BuildContext context) {
