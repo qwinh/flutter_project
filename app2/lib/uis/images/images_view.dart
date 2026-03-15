@@ -25,6 +25,7 @@ class _ImagesViewState extends State<ImagesView> {
 
   /// How many rows to prefetch above and below the current viewport / drag edge.
   static const int _prefetchRows = 3;
+
   /// Estimated cell size used for scroll-position → index math (updated on layout).
   double _cellSize = 120;
   int _lastPrefetchCenter = -1;
@@ -71,8 +72,10 @@ class _ImagesViewState extends State<ImagesView> {
         ? _scrollController.offset
         : 0.0;
     final rowInView = (scrollOffset / _cellSize).round();
-    final centerIndex = (rowInView * _currentCrossAxisCount)
-        .clamp(0, _assets.length - 1);
+    final centerIndex = (rowInView * _currentCrossAxisCount).clamp(
+      0,
+      _assets.length - 1,
+    );
     _prefetchAround(centerIndex, _currentCrossAxisCount);
   }
 
@@ -94,9 +97,9 @@ class _ImagesViewState extends State<ImagesView> {
       if (_thumbnailCache.containsKey(id)) continue; // already cached
       // Mark as in-flight immediately to prevent duplicate fetches.
       _thumbnailCache[id] = null;
-      _assets[i]
-          .thumbnailDataWithSize(const ThumbnailSize(200, 200))
-          .then((bytes) {
+      _assets[i].thumbnailDataWithSize(const ThumbnailSize(200, 200)).then((
+        bytes,
+      ) {
         _thumbnailCache[id] = bytes;
         // No setState — the tile will read from the cache when it next builds.
       }).ignore();
@@ -382,7 +385,9 @@ class _ImagesViewState extends State<ImagesView> {
                 final spacing = 4.0;
                 final pad = 4.0;
                 final cellW =
-                    (constraints.maxWidth - pad * 2 - spacing * (crossAxisCount - 1)) /
+                    (constraints.maxWidth -
+                        pad * 2 -
+                        spacing * (crossAxisCount - 1)) /
                     crossAxisCount;
                 if (cellW > 0) _cellSize = cellW;
 

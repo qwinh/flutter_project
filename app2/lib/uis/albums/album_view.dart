@@ -410,8 +410,10 @@ class _AlbumViewState extends State<AlbumView> {
                           );
                         },
                         onLongPress: () async {
+                          final ctx = context;
+                          final albumManager = ctx.read<AlbumManager>();
                           final remove = await showDialog<bool>(
-                            context: context,
+                            context: ctx,
                             builder: (ctx) => AlertDialog(
                               title: const Text('Remove Image'),
                               content: const Text(
@@ -432,11 +434,13 @@ class _AlbumViewState extends State<AlbumView> {
                               ],
                             ),
                           );
+                          if (!mounted) return;
                           if (remove == true) {
-                            await context
-                                .read<AlbumManager>()
-                                .removeImageFromAlbum(widget.albumId, uri);
-                            await _loadData();
+                            await albumManager.removeImageFromAlbum(
+                              widget.albumId,
+                              uri,
+                            );
+                            if (mounted) await _loadData();
                           }
                         },
                         child: ClipRRect(

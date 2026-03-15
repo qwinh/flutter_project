@@ -23,18 +23,37 @@ class _ImageViewState extends State<ImageView> {
   late int _currentIndex;
   final Map<String, Future<File?>> _fileFutureCache =
       {}; // cache futures to avoid reload flicker
+  final Set<String> _precached = {};
 
   @override
   void initState() {
     super.initState();
     _currentIndex = widget.initialIndex;
     _pageController = PageController(initialPage: _currentIndex);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _precacheImage(_currentIndex);
+      if (_currentIndex + 1 < widget.assets.length)
+        _precacheImage(_currentIndex + 1);
+      if (_currentIndex - 1 >= 0) _precacheImage(_currentIndex - 1);
+    });
   }
 
   @override
   void dispose() {
     _pageController.dispose();
     super.dispose();
+  }
+
+  void _precacheImage(int index) async {
+    if (index < 0 || index >= widget.assets.length) return;
+    final asset = widget.assets[index];
+    final key = asset.id;
+    if (_precached.contains(key)) return;
+    _precached.add(key);
+    final file = await asset.file;
+    if (file != null && mounted) {
+      await precacheImage(FileImage(file), context);
+    }
   }
 
   @override
@@ -70,6 +89,8 @@ class _ImageViewState extends State<ImageView> {
         itemCount: widget.assets.length,
         onPageChanged: (index) {
           setState(() => _currentIndex = index);
+          _precacheImage(index + 1);
+          _precacheImage(index - 1);
         },
         itemBuilder: (context, index) {
           final asset = widget.assets[index];
