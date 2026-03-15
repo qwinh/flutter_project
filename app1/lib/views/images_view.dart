@@ -1,17 +1,19 @@
 // lib/views/images_view.dart
-// Displays all device images in a grid.
-// Supports filtering (album, favorite albums, dimensions) and sorting.
-// Long-press to enter multi-select; swipe horizontally to add more to selection.
-// Selected images go to the global SelectionProvider pool.
+// Displays device images in a paginated grid.
+// Long-press → drag-to-select with auto-scroll (DragSelectGrid).
+// Filter sheet: multi-album include/exclude, favorites, native album, dimensions, sort.
 
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:photo_manager/photo_manager.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/album_provider.dart';
 import '../providers/image_provider.dart' as ip;
 import '../providers/selection_provider.dart';
 import '../router/app_router.dart';
+import '../widgets/drag_select_grid.dart';
 import '../widgets/widgets.dart';
 
 class ImagesView extends StatefulWidget {
@@ -25,24 +27,24 @@ class _ImagesViewState extends State<ImagesView> {
   bool _selectionMode = false;
   late final AppLifecycleListener _lifecycleListener;
 
-  // ── Drag-to-select state ──────────────────────────────────────────────────
-  // The key is placed on the GridView so we can get its RenderBox for
-  // coordinate mapping.
-  final _gridKey = GlobalKey();
+  final ScrollController _scrollController = ScrollController();
+  final Map<String, Uint8List?> _thumbnailCache = {};
 
-  // The scroll controller lets us read the current scroll offset during a drag.
-  final _scrollController = ScrollController();
+  // Drag-select state
+  bool _dragDeselectMode = false;
+  Set<int> _dragSweepIndices = {};
+  Set<String> _preDragSelection = {};
 
-  // Tracks which items were already toggled in the current drag gesture so
-  // we don't flip the same item multiple times while the finger is on it.
-  final Set<int> _dragVisited = {};
-
-  // Whether the drag started on a selected item (drives select vs deselect mode).
-  bool? _dragSelecting;
+  // Prefetch state
+  int _currentCrossAxisCount = 3;
+  double _cellSize = 120;
+  int _lastPrefetchCenter = -1;
+  static const int _prefetchRows = 3;
 
   @override
   void initState() {
     super.initState();
+    _scrollController.addListener(_onScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<ip.DeviceImageProvider>().requestPermissionAndLoad();
       context.read<SelectionProvider>().load();
@@ -51,93 +53,133 @@ class _ImagesViewState extends State<ImagesView> {
   }
 
   void _onAppResumed() {
-    final imageProvider = context.read<ip.DeviceImageProvider>();
-    if (!imageProvider.permissionGranted) {
-      imageProvider.requestPermissionAndLoad();
-    } else if (imageProvider.all.isEmpty) {
-      imageProvider.loadAll();
+    final imgProv = context.read<ip.DeviceImageProvider>();
+    if (!imgProv.permissionGranted) {
+      imgProv.requestPermissionAndLoad();
+    } else if (imgProv.all.isEmpty) {
+      imgProv.loadAll();
+    }
+  }
+
+  void _onScroll() {
+    final imgProv = context.read<ip.DeviceImageProvider>();
+    if (_scrollController.position.pixels >=
+        _scrollController.position.maxScrollExtent - 300) {
+      imgProv.loadMore();
+    }
+    _prefetchFromScroll(imgProv.filtered);
+  }
+
+  void _prefetchFromScroll(List<AssetEntity> assets) {
+    if (_cellSize <= 0 || assets.isEmpty) return;
+    final offset = _scrollController.hasClients ? _scrollController.offset : 0.0;
+    final row = (offset / _cellSize).round();
+    final center = (row * _currentCrossAxisCount).clamp(0, assets.length - 1);
+    _prefetchAround(center, _currentCrossAxisCount, assets);
+  }
+
+  void _prefetchAround(int center, int cols, List<AssetEntity> assets) {
+    if (assets.isEmpty) return;
+    final half = _prefetchRows * cols;
+    final start = (center - half).clamp(0, assets.length - 1);
+    final end = (center + half).clamp(0, assets.length - 1);
+
+    if ((center - _lastPrefetchCenter).abs() < cols) return;
+    _lastPrefetchCenter = center;
+
+    for (int i = start; i <= end; i++) {
+      final id = assets[i].id;
+      if (_thumbnailCache.containsKey(id)) continue;
+      _thumbnailCache[id] = null; // mark in-flight
+      assets[i]
+          .thumbnailDataWithSize(const ThumbnailSize(200, 200))
+          .then((bytes) {
+        _thumbnailCache[id] = bytes;
+      }).ignore();
     }
   }
 
   @override
   void dispose() {
-    _lifecycleListener.dispose();
     _scrollController.dispose();
+    _lifecycleListener.dispose();
     super.dispose();
   }
 
-  void _enterSelectionMode() => setState(() => _selectionMode = true);
-  void _exitSelectionMode()  => setState(() => _selectionMode = false);
+  // ── Drag-select callbacks ──────────────────────────────────────────────────
 
-  // ── Drag-to-select helpers ────────────────────────────────────────────────
-
-  /// Converts a pointer position (in the GridView's local coordinate space)
-  /// into a grid item index, or -1 if out of bounds.
-  int _indexAt(Offset localPos, int itemCount, double gridWidth) {
-    final cols = (gridWidth / 120).floor().clamp(3, 6);
-    const spacing = 2.0;
-    const padding = 2.0;
-    final cellSize = (gridWidth - padding * 2 - spacing * (cols - 1)) / cols;
-
-    // Account for scroll offset so positions stay correct while scrolling.
-    final scrollOffset = _scrollController.hasClients
-        ? _scrollController.offset
-        : 0.0;
-    final adjustedY = localPos.dy + scrollOffset - padding;
-    final adjustedX = localPos.dx - padding;
-
-    if (adjustedX < 0 || adjustedY < 0) return -1;
-
-    final col = (adjustedX / (cellSize + spacing)).floor();
-    final row = (adjustedY / (cellSize + spacing)).floor();
-    if (col >= cols) return -1;
-
-    final idx = row * cols + col;
-    return (idx >= 0 && idx < itemCount) ? idx : -1;
-  }
-
-  void _onDragStart(DragStartDetails details, int itemCount, double gridWidth) {
-    if (!_selectionMode) return;
-    final box = _gridKey.currentContext?.findRenderObject() as RenderBox?;
-    if (box == null) return;
-    final local = box.globalToLocal(details.globalPosition);
-    final idx   = _indexAt(local, itemCount, gridWidth);
-    if (idx == -1) return;
-
+  void _onSelectionStart(int index) {
     final selProv = context.read<SelectionProvider>();
-    final assets  = context.read<ip.DeviceImageProvider>().filtered;
-    _dragVisited.clear();
-    _dragVisited.add(idx);
-    // If the touched item is already selected, this drag will deselect.
-    _dragSelecting = !selProv.isSelected(assets[idx].id);
-    if (_dragSelecting!) {
-      selProv.select(assets[idx].id);
-    } else {
-      selProv.deselect(assets[idx].id);
+    final imgProv = context.read<ip.DeviceImageProvider>();
+    final id = imgProv.filtered[index].id;
+
+    setState(() {
+      _selectionMode = true;
+      _dragDeselectMode = selProv.isSelected(id);
+      _preDragSelection = Set<String>.from(selProv.assetIds);
+      _dragSweepIndices = {index};
+    });
+
+    if (!_dragDeselectMode) {
+      selProv.select(id);
     }
   }
 
-  void _onDragUpdate(DragUpdateDetails details, int itemCount, double gridWidth) {
-    if (!_selectionMode || _dragSelecting == null) return;
-    final box = _gridKey.currentContext?.findRenderObject() as RenderBox?;
-    if (box == null) return;
-    final local = box.globalToLocal(details.globalPosition);
-    final idx   = _indexAt(local, itemCount, gridWidth);
-    if (idx == -1 || _dragVisited.contains(idx)) return;
-
-    _dragVisited.add(idx);
-    final assets  = context.read<ip.DeviceImageProvider>().filtered;
+  void _onSelectionUpdate(int start, int end) {
     final selProv = context.read<SelectionProvider>();
-    if (_dragSelecting!) {
-      selProv.select(assets[idx].id);
-    } else {
-      selProv.deselect(assets[idx].id);
+    final imgProv = context.read<ip.DeviceImageProvider>();
+    final assets = imgProv.filtered;
+
+    final newSweep = <int>{for (int i = start; i <= end; i++) i};
+    if (newSweep.length == _dragSweepIndices.length &&
+        newSweep.containsAll(_dragSweepIndices)) {
+      return;
+    }
+
+    setState(() => _dragSweepIndices = newSweep);
+    _prefetchAround(end, _currentCrossAxisCount, assets);
+
+    final sweepIds = newSweep.map((i) => assets[i].id).toSet();
+
+    // Build the desired selection based on drag mode
+    final desired = _dragDeselectMode
+        ? _preDragSelection.difference(sweepIds)
+        : _preDragSelection.union(sweepIds);
+
+    // Apply: add new, remove stale
+    final toAdd = desired.difference(selProv.assetIds.toSet());
+    final toRemove = selProv.assetIds.toSet().difference(desired);
+    for (final id in toAdd) {
+      selProv.select(id);
+    }
+    for (final id in toRemove) {
+      selProv.deselect(id);
     }
   }
 
-  void _onDragEnd(DragEndDetails _) {
-    _dragVisited.clear();
-    _dragSelecting = null;
+  void _onSelectionEnd() {
+    setState(() {
+      _dragSweepIndices = {};
+      _preDragSelection = {};
+      _dragDeselectMode = false;
+    });
+  }
+
+  void _onItemTap(int index) {
+    final imgProv = context.read<ip.DeviceImageProvider>();
+    final selProv = context.read<SelectionProvider>();
+
+    if (_selectionMode) {
+      selProv.toggle(imgProv.filtered[index].id);
+      if (selProv.count == 0) setState(() => _selectionMode = false);
+    } else {
+      context.read<FilteredListNotifier>().setList(imgProv.filtered);
+      context.push('/images/view/$index');
+    }
+  }
+
+  void _exitSelectionMode() {
+    setState(() => _selectionMode = false);
   }
 
   @override
@@ -146,7 +188,6 @@ class _ImagesViewState extends State<ImagesView> {
     final selProv = context.watch<SelectionProvider>();
     final selCount = selProv.count;
 
-    // Keep badge in sync
     context.read<SelectionCountNotifier>().update(selCount);
 
     return Scaffold(
@@ -156,11 +197,30 @@ class _ImagesViewState extends State<ImagesView> {
             : const Text('Photos'),
         actions: [
           if (_selectionMode) ...[
+            // Select-all
+            IconButton(
+              icon: const Icon(Icons.select_all),
+              tooltip: 'Select all',
+              onPressed: () {
+                for (final a in imgProv.filtered) {
+                  selProv.select(a.id);
+                }
+              },
+            ),
             IconButton(
               icon: const Icon(Icons.close),
               onPressed: _exitSelectionMode,
             ),
           ] else ...[
+            if (selCount > 0)
+              TextButton.icon(
+                onPressed: () => context.push('/selected'),
+                icon: Badge(
+                  label: Text('$selCount'),
+                  child: const Icon(Icons.checklist),
+                ),
+                label: const Text('Selected'),
+              ),
             IconButton(
               icon: const Icon(Icons.filter_list),
               tooltip: 'Filters & Sort',
@@ -168,6 +228,45 @@ class _ImagesViewState extends State<ImagesView> {
             ),
           ],
         ],
+        // Native album dropdown
+        bottom: imgProv.nativeAlbums.length > 1
+            ? PreferredSize(
+                preferredSize: const Size.fromHeight(52),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 4),
+                  child: DropdownButtonFormField<AssetPathEntity?>(
+                    value: imgProv.filterState.nativeAlbum,
+                    decoration: InputDecoration(
+                      filled: true,
+                      fillColor: Theme.of(context).colorScheme.surface,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide.none,
+                      ),
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 8),
+                    ),
+                    items: [
+                      const DropdownMenuItem<AssetPathEntity?>(
+                        value: null,
+                        child: Text('All Photos'),
+                      ),
+                      ...imgProv.nativeAlbums.map((a) =>
+                          DropdownMenuItem<AssetPathEntity?>(
+                            value: a,
+                            child: Text(
+                                a.name.isEmpty ? 'All Photos' : a.name),
+                          )),
+                    ],
+                    onChanged: (album) {
+                      imgProv.setFilter(imgProv.filterState
+                          .copyWith(nativeAlbum: album));
+                    },
+                  ),
+                ),
+              )
+            : null,
       ),
       body: imgProv.loading
           ? const Center(child: CircularProgressIndicator())
@@ -178,69 +277,56 @@ class _ImagesViewState extends State<ImagesView> {
                   ? const Center(child: Text('No photos found.'))
                   : LayoutBuilder(
                       builder: (ctx, constraints) {
-                        final gridWidth = constraints.maxWidth;
-                        final itemCount  = imgProv.filtered.length;
-                        return GestureDetector(
-                          // In selection mode, a pan drag selects/deselects
-                          // every cell the finger passes over.
-                          onPanStart: _selectionMode
-                              ? (d) => _onDragStart(d, itemCount, gridWidth)
-                              : null,
-                          onPanUpdate: _selectionMode
-                              ? (d) => _onDragUpdate(d, itemCount, gridWidth)
-                              : null,
-                          onPanEnd: _selectionMode ? _onDragEnd : null,
-                          child: GridView.builder(
-                            key: _gridKey,
-                            controller: _scrollController,
-                            // Disable built-in scroll physics during a drag-select
-                            // so the pan gesture wins the arena without fighting
-                            // the scroll view.
-                            physics: _selectionMode
-                                ? const NeverScrollableScrollPhysics()
-                                : const AlwaysScrollableScrollPhysics(),
-                            padding: const EdgeInsets.all(2),
-                            gridDelegate:
-                                _adaptiveGrid(gridWidth),
-                            itemCount: itemCount,
-                            itemBuilder: (ctx, i) {
-                              final asset = imgProv.filtered[i];
-                              final isSelected = selProv.isSelected(asset.id);
+                        int cols = 3;
+                        if (constraints.maxWidth > 600) cols = 4;
+                        if (constraints.maxWidth > 900) cols = 5;
 
-                              return GestureDetector(
-                                onTap: () {
-                                  if (_selectionMode) {
-                                    selProv.toggle(asset.id);
-                                  } else {
-                                    context
-                                        .read<FilteredListNotifier>()
-                                        .setList(imgProv.filtered);
-                                    context.push('/images/view/$i');
-                                  }
-                                },
-                                onLongPress: () {
-                                  _enterSelectionMode();
-                                  selProv.select(asset.id);
-                                },
-                                child: AssetThumb(
-                                  asset: asset,
-                                  selected: isSelected,
-                                ),
+                        if (_currentCrossAxisCount != cols) {
+                          _currentCrossAxisCount = cols;
+                        }
+                        const spacing = 4.0;
+                        const pad = 4.0;
+                        final cellW =
+                            (constraints.maxWidth - pad * 2 - spacing * (cols - 1)) /
+                                cols;
+                        if (cellW > 0) _cellSize = cellW;
+
+                        final assets = imgProv.filtered;
+
+                        return DragSelectGrid(
+                          scrollController: _scrollController,
+                          crossAxisCount: cols,
+                          itemCount: assets.length,
+                          spacing: spacing,
+                          padding: const EdgeInsets.all(pad),
+                          isInSelectionMode: _selectionMode,
+                          onSelectionStart: _onSelectionStart,
+                          onSelectionUpdate: _onSelectionUpdate,
+                          onSelectionEnd: _onSelectionEnd,
+                          onItemTap: _onItemTap,
+                          child: GridView.builder(
+                            controller: _scrollController,
+                            padding: const EdgeInsets.all(pad),
+                            gridDelegate:
+                                SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: cols,
+                              crossAxisSpacing: spacing,
+                              mainAxisSpacing: spacing,
+                            ),
+                            itemCount: assets.length,
+                            itemBuilder: (ctx, i) {
+                              final asset = assets[i];
+                              return AssetThumb(
+                                key: ValueKey(asset.id),
+                                asset: asset,
+                                selected: selProv.isSelected(asset.id),
+                                cachedBytes: _thumbnailCache[asset.id],
                               );
                             },
                           ),
                         );
                       },
                     ),
-    );
-  }
-
-  SliverGridDelegateWithFixedCrossAxisCount _adaptiveGrid(double width) {
-    final cols = (width / 120).floor().clamp(3, 6);
-    return SliverGridDelegateWithFixedCrossAxisCount(
-      crossAxisCount: cols,
-      crossAxisSpacing: 2,
-      mainAxisSpacing: 2,
     );
   }
 
@@ -295,6 +381,7 @@ class _FilterSheetState extends State<_FilterSheet> {
   @override
   Widget build(BuildContext context) {
     final ap = context.read<AlbumProvider>();
+    final theme = Theme.of(context);
 
     return Padding(
       padding: EdgeInsets.only(
@@ -306,33 +393,71 @@ class _FilterSheetState extends State<_FilterSheet> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Text('Filter & Sort',
-                style: Theme.of(context).textTheme.titleLarge),
+                style: theme.textTheme.titleLarge),
             const SizedBox(height: 12),
 
-            // Album filter
-            DropdownButtonFormField<int?>(
-              decoration:
-                  const InputDecoration(labelText: 'Filter by album'),
-              value: _state.albumIdFilter,
-              items: [
-                const DropdownMenuItem(value: null, child: Text('All albums')),
-                ...ap.albums.map((a) => DropdownMenuItem(
-                      value: a.id,
-                      child: Text(a.name),
-                    )),
-              ],
-              onChanged: (v) =>
-                  setState(() => _state = _state.copyWith(albumIdFilter: v)),
+            // ── Custom album filter ──────────────────────────────────────
+            Text('Custom Album Filter',
+                style: theme.textTheme.titleSmall),
+            const SizedBox(height: 6),
+
+            // Mode selector
+            if (_state.albumIds.isNotEmpty) ...[
+              Row(
+                children: [
+                  const Text('Mode: '),
+                  const SizedBox(width: 8),
+                  ChoiceChip(
+                    label: const Text('In these albums'),
+                    selected: _state.albumFilterMode ==
+                        ip.AlbumFilterMode.includeAny,
+                    onSelected: (_) => setState(() => _state = _state.copyWith(
+                        albumFilterMode: ip.AlbumFilterMode.includeAny)),
+                  ),
+                  const SizedBox(width: 8),
+                  ChoiceChip(
+                    label: const Text('Not in these albums'),
+                    selected: _state.albumFilterMode ==
+                        ip.AlbumFilterMode.excludeAll,
+                    onSelected: (_) => setState(() => _state = _state.copyWith(
+                        albumFilterMode: ip.AlbumFilterMode.excludeAll)),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+            ],
+
+            // Album multi-select chips
+            Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              children: ap.albums.map((a) {
+                final selected = _state.albumIds.contains(a.id);
+                return FilterChip(
+                  label: Text(a.name),
+                  selected: selected,
+                  onSelected: (v) {
+                    final newIds = Set<int>.from(_state.albumIds);
+                    v ? newIds.add(a.id!) : newIds.remove(a.id);
+                    setState(
+                        () => _state = _state.copyWith(albumIds: newIds));
+                  },
+                );
+              }).toList(),
             ),
-            const SizedBox(height: 8),
+            if (ap.albums.isEmpty)
+              Text('No custom albums yet.',
+                  style: TextStyle(color: theme.colorScheme.outline)),
+
+            const SizedBox(height: 12),
 
             // Favorite albums only
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('In favorite albums only'),
               value: _state.onlyFavoriteAlbums,
-              onChanged: (v) =>
-                  setState(() => _state = _state.copyWith(onlyFavoriteAlbums: v)),
+              onChanged: (v) => setState(
+                  () => _state = _state.copyWith(onlyFavoriteAlbums: v)),
             ),
 
             // Min dimensions
@@ -342,8 +467,8 @@ class _FilterSheetState extends State<_FilterSheet> {
                   child: TextField(
                     controller: _minWCtrl,
                     keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                        labelText: 'Min width (px)'),
+                    decoration:
+                        const InputDecoration(labelText: 'Min width (px)'),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -351,8 +476,8 @@ class _FilterSheetState extends State<_FilterSheet> {
                   child: TextField(
                     controller: _minHCtrl,
                     keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                        labelText: 'Min height (px)'),
+                    decoration:
+                        const InputDecoration(labelText: 'Min height (px)'),
                   ),
                 ),
               ],
@@ -360,15 +485,15 @@ class _FilterSheetState extends State<_FilterSheet> {
             const SizedBox(height: 12),
 
             // Sort
-            Text('Sort', style: Theme.of(context).textTheme.titleSmall),
+            Text('Sort', style: theme.textTheme.titleSmall),
             Wrap(
               spacing: 8,
               children: ip.SortOrder.values.map((s) {
                 return ChoiceChip(
                   label: Text(_sortLabel(s)),
                   selected: _state.sortOrder == s,
-                  onSelected: (_) =>
-                      setState(() => _state = _state.copyWith(sortOrder: s)),
+                  onSelected: (_) => setState(
+                      () => _state = _state.copyWith(sortOrder: s)),
                 );
               }).toList(),
             ),
@@ -378,12 +503,14 @@ class _FilterSheetState extends State<_FilterSheet> {
               onPressed: () {
                 final w = int.tryParse(_minWCtrl.text);
                 final h = int.tryParse(_minHCtrl.text);
-                widget.onApply(_state.copyWith(minWidth: w, minHeight: h));
+                widget.onApply(
+                    _state.copyWith(minWidth: w, minHeight: h));
               },
               child: const Text('Apply'),
             ),
             TextButton(
-              onPressed: () => widget.onApply(const ip.ImageFilterState()),
+              onPressed: () =>
+                  widget.onApply(const ip.ImageFilterState()),
               child: const Text('Reset filters'),
             ),
           ],
@@ -400,7 +527,7 @@ class _FilterSheetState extends State<_FilterSheet> {
       };
 }
 
-// ── Permission prompt ─────────────────────────────────────────────────────────
+// ── Permission prompt ──────────────────────────────────────────────────────────
 
 class _PermissionPrompt extends StatelessWidget {
   final VoidCallback onRequest;

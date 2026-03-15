@@ -1,16 +1,23 @@
 // lib/widgets/widgets.dart
 // Reusable small widgets.
 
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
-import 'package:photo_manager_image_provider/photo_manager_image_provider.dart';
 
-// ── Asset thumbnail ───────────────────────────────────────────────────────────
+// ── Animated asset thumbnail ──────────────────────────────────────────────────
+//
+// Shows a thumbnail from either a pre-fetched [bytes] cache or loads via
+// photo_manager. When [selected] the tile scales down 10 %, shows a blue
+// tint, and animates a checkmark badge.
 
-class AssetThumb extends StatelessWidget {
+class AssetThumb extends StatefulWidget {
   final AssetEntity asset;
   final double size;
   final bool selected;
+  // Optional: if caller already has the bytes cached, pass them in to skip
+  // the async load entirely.
+  final Uint8List? cachedBytes;
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
 
@@ -19,39 +26,113 @@ class AssetThumb extends StatelessWidget {
     required this.asset,
     this.size = 80,
     this.selected = false,
+    this.cachedBytes,
     this.onTap,
     this.onLongPress,
   });
 
   @override
+  State<AssetThumb> createState() => _AssetThumbState();
+}
+
+class _AssetThumbState extends State<AssetThumb> {
+  Uint8List? _bytes;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.cachedBytes != null) {
+      _bytes = widget.cachedBytes;
+    } else {
+      _loadThumbnail();
+    }
+  }
+
+  @override
+  void didUpdateWidget(AssetThumb old) {
+    super.didUpdateWidget(old);
+    if (widget.cachedBytes != null && widget.cachedBytes != old.cachedBytes) {
+      setState(() => _bytes = widget.cachedBytes);
+    }
+  }
+
+  Future<void> _loadThumbnail() async {
+    final bytes = await widget.asset.thumbnailDataWithSize(
+      ThumbnailSize.square(widget.size.toInt()),
+    );
+    if (mounted) setState(() => _bytes = bytes);
+  }
+
+  @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: onTap,
-      onLongPress: onLongPress,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          AssetEntityImage(
-            asset,
-            isOriginal: false,
-            thumbnailSize: ThumbnailSize.square(size.toInt()),
-            fit: BoxFit.cover,
-          ),
-          if (selected)
-            Container(
-              color: Colors.blue.withOpacity(0.40),
-              alignment: Alignment.topRight,
-              padding: const EdgeInsets.all(4),
-              child: const Icon(Icons.check_circle,
-                  color: Colors.white, size: 20),
+      onTap: widget.onTap,
+      onLongPress: widget.onLongPress,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeInOut,
+        transformAlignment: Alignment.center,
+        transform: widget.selected
+            ? (Matrix4.identity()..scale(0.90))
+            : Matrix4.identity(),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            // Thumbnail image
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: _bytes != null
+                  ? Image.memory(_bytes!, fit: BoxFit.cover)
+                  : Container(
+                      color: Colors.grey[300],
+                      child: const Icon(Icons.image, color: Colors.grey),
+                    ),
             ),
-        ],
+            // Blue tint + border when selected
+            if (widget.selected)
+              AnimatedOpacity(
+                opacity: 1.0,
+                duration: const Duration(milliseconds: 150),
+                child: Container(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(6),
+                    color: Colors.blue.withValues(alpha: 0.30),
+                    border: Border.all(color: Colors.blue, width: 2.5),
+                  ),
+                ),
+              ),
+            // Checkmark circle badge
+            Positioned(
+              top: 4,
+              right: 4,
+              child: AnimatedScale(
+                scale: widget.selected ? 1.0 : 0.8,
+                duration: const Duration(milliseconds: 150),
+                child: Container(
+                  width: 24,
+                  height: 24,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: widget.selected
+                        ? Colors.blue
+                        : Colors.black.withValues(alpha: 0.35),
+                    border: Border.all(color: Colors.white, width: 1.5),
+                  ),
+                  child: widget.selected
+                      ? const Icon(Icons.check,
+                          size: 16, color: Colors.white)
+                      : null,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
-// ── Confirm dialog ────────────────────────────────────────────────────────────
+// ── Confirm dialog ─────────────────────────────────────────────────────────────
 
 Future<bool> confirmDialog(
   BuildContext context, {
@@ -81,7 +162,7 @@ Future<bool> confirmDialog(
   return result ?? false;
 }
 
-// ── Tag chip picker dialog ────────────────────────────────────────────────────
+// ── Tag chip picker dialog ─────────────────────────────────────────────────────
 
 class TagPickerDialog extends StatefulWidget {
   final List<({int id, String name})> allTags;

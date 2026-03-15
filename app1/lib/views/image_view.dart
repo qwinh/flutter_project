@@ -1,13 +1,10 @@
 // lib/views/image_view.dart
-// Full-screen viewer. Swipe left/right to navigate the list from the
-// previous context (passed via FilteredListNotifier or album).
-// Shows filename, dimensions, date on tap.
-// Toggle selection from the global pool.
+// Full-screen image viewer with pin-to-zoom, swipe navigation,
+// info bottom bar, and selection toggle.
 
+import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 import 'package:photo_manager/photo_manager.dart';
-import 'package:photo_manager_image_provider/photo_manager_image_provider.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/selection_provider.dart';
@@ -23,133 +20,143 @@ class ImageView extends StatefulWidget {
 }
 
 class _ImageViewState extends State<ImageView> {
-  late PageController _pageCtrl;
+  late PageController _pageController;
+  late int _currentIndex;
+  // Cache Future<File?> objects so we don't restart the load on every rebuild.
+  final Map<String, Future<File?>> _fileFutureCache = {};
+
   List<AssetEntity> _assets = [];
-  int _currentIndex = 0;
-  bool _showInfo = false;
 
   @override
   void initState() {
     super.initState();
     _currentIndex = widget.initialIndex;
-    _pageCtrl = PageController(initialPage: widget.initialIndex);
+    _pageController = PageController(initialPage: _currentIndex);
+  }
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      // Get the list from the shared notifier (set by ImagesView or AlbumView)
-      final list = context.read<FilteredListNotifier>().list;
-      if (list.isNotEmpty && list.first is AssetEntity) {
-        setState(() => _assets = list.cast<AssetEntity>());
-      }
-    });
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Grab the shared list from FilteredListNotifier (set by the caller).
+    final raw = context.read<FilteredListNotifier>().list;
+    final assets = raw.whereType<AssetEntity>().toList();
+    if (assets.isNotEmpty) _assets = assets;
   }
 
   @override
   void dispose() {
-    _pageCtrl.dispose();
+    _pageController.dispose();
     super.dispose();
   }
-
-  AssetEntity? get _current =>
-      _assets.isEmpty ? null : _assets[_currentIndex];
 
   @override
   Widget build(BuildContext context) {
     final selProv = context.watch<SelectionProvider>();
-    final asset = _current;
+
+    if (_assets.isEmpty) {
+      return Scaffold(
+        appBar: AppBar(),
+        body: const Center(child: Text('No images to show.')),
+      );
+    }
+
+    final current = _assets[_currentIndex.clamp(0, _assets.length - 1)];
+    final isSelected = selProv.isSelected(current.id);
 
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        backgroundColor: Colors.transparent,
+        backgroundColor: Colors.black87,
         foregroundColor: Colors.white,
+        title: Text(
+          '${_currentIndex + 1} / ${_assets.length}',
+          style: const TextStyle(color: Colors.white),
+        ),
         actions: [
-          // Info toggle
           IconButton(
-            icon: const Icon(Icons.info_outline),
-            onPressed: () => setState(() => _showInfo = !_showInfo),
-          ),
-          // Selection toggle
-          if (asset != null)
-            IconButton(
-              icon: Icon(
-                selProv.isSelected(asset.id)
-                    ? Icons.check_circle
-                    : Icons.check_circle_outline,
-                color: selProv.isSelected(asset.id)
-                    ? Colors.blue
-                    : Colors.white,
-              ),
-              tooltip: selProv.isSelected(asset.id)
-                  ? 'Remove from selection'
-                  : 'Add to selection',
-              onPressed: () => selProv.toggle(asset.id),
+            icon: Icon(
+              isSelected ? Icons.check_circle : Icons.check_circle_outline,
+              color: isSelected ? Colors.blue : Colors.white,
             ),
+            tooltip: isSelected ? 'Deselect' : 'Select',
+            onPressed: () => selProv.toggle(current.id),
+          ),
         ],
       ),
-      extendBodyBehindAppBar: true,
-      body: _assets.isEmpty
-          ? const Center(
-              child: CircularProgressIndicator(color: Colors.white))
-          : Stack(
-              children: [
-                // ── Page view for swipe navigation ──────────────────────
-                PageView.builder(
-                  controller: _pageCtrl,
-                  itemCount: _assets.length,
-                  onPageChanged: (i) =>
-                      setState(() => _currentIndex = i),
-                  itemBuilder: (ctx, i) {
-                    return InteractiveViewer(
-                      child: Center(
-                        child: AssetEntityImage(
-                          _assets[i],
-                          isOriginal: true,
-                          fit: BoxFit.contain,
-                        ),
-                      ),
-                    );
-                  },
-                ),
-
-                // ── Info overlay ────────────────────────────────────────
-                if (_showInfo && asset != null)
-                  Positioned(
-                    bottom: 0,
-                    left: 0,
-                    right: 0,
-                    child: _InfoPanel(asset: asset),
-                  ),
-              ],
+      body: PageView.builder(
+        controller: _pageController,
+        itemCount: _assets.length,
+        onPageChanged: (i) => setState(() => _currentIndex = i),
+        itemBuilder: (ctx, i) {
+          final asset = _assets[i];
+          final future = _fileFutureCache.putIfAbsent(
+            asset.id,
+            () => asset.file,
+          );
+          return _FullImagePage(asset: asset, fileFuture: future);
+        },
+      ),
+      bottomNavigationBar: Container(
+        color: Colors.black87,
+        padding:
+            const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Expanded(
+              child: Text(
+                current.title ?? 'Image',
+                style: const TextStyle(color: Colors.white70, fontSize: 13),
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
+            Text(
+              '${current.width} × ${current.height}',
+              style: const TextStyle(color: Colors.white54, fontSize: 13),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
 
-class _InfoPanel extends StatelessWidget {
+class _FullImagePage extends StatelessWidget {
   final AssetEntity asset;
-  const _InfoPanel({required this.asset});
+  final Future<File?> fileFuture;
+
+  const _FullImagePage({required this.asset, required this.fileFuture});
 
   @override
   Widget build(BuildContext context) {
-    final date = DateFormat('yyyy-MM-dd HH:mm')
-        .format(asset.createDateTime);
-
-    return Container(
-      color: Colors.black.withOpacity(0.75),
-      padding:
-          const EdgeInsets.fromLTRB(16, 12, 16, 32),
-      child: DefaultTextStyle(
-        style: const TextStyle(color: Colors.white, fontSize: 13),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text('File: ${asset.title ?? 'Unknown'}'),
-            Text('Dimensions: ${asset.width} × ${asset.height}'),
-            Text('Date: $date'),
-          ],
-        ),
-      ),
+    return FutureBuilder<File?>(
+      future: fileFuture,
+      builder: (ctx, snap) {
+        if (snap.connectionState == ConnectionState.waiting) {
+          return const Center(
+              child: CircularProgressIndicator(color: Colors.white));
+        }
+        final file = snap.data;
+        if (file == null) {
+          return const Center(
+              child: Icon(Icons.broken_image,
+                  size: 64, color: Colors.white54));
+        }
+        return InteractiveViewer(
+          minScale: 0.5,
+          maxScale: 5.0,
+          child: Center(
+            child: Image.file(
+              file,
+              fit: BoxFit.contain,
+              errorBuilder: (_, __, ___) => const Icon(
+                  Icons.broken_image,
+                  size: 64,
+                  color: Colors.white54),
+            ),
+          ),
+        );
+      },
     );
   }
 }

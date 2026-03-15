@@ -10,7 +10,7 @@ import '../models/models.dart';
 
 class DatabaseHelper {
   static const _dbName = 'photovault.db';
-  static const _dbVersion = 1;
+  static const _dbVersion = 2; // bumped for date columns + FK pragma
 
   DatabaseHelper._();
   static final DatabaseHelper instance = DatabaseHelper._();
@@ -27,17 +27,24 @@ class DatabaseHelper {
     return openDatabase(
       join(dbPath, _dbName),
       version: _dbVersion,
+      onConfigure: (db) async {
+        // Enable foreign key enforcement.
+        await db.execute('PRAGMA foreign_keys = ON');
+      },
       onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
     );
   }
 
   Future<void> _onCreate(Database db, int version) async {
     await db.execute('''
       CREATE TABLE albums (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        name        TEXT    NOT NULL,
-        description TEXT    NOT NULL DEFAULT '',
-        is_favorite INTEGER NOT NULL DEFAULT 0
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        name              TEXT    NOT NULL,
+        description       TEXT    NOT NULL DEFAULT '',
+        is_favorite       INTEGER NOT NULL DEFAULT 0,
+        date_created      TEXT    NOT NULL DEFAULT '',
+        date_latest_modify TEXT   NOT NULL DEFAULT ''
       )
     ''');
 
@@ -77,11 +84,25 @@ class DatabaseHelper {
     ''');
   }
 
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      // Add date columns to existing albums table
+      try {
+        await db.execute(
+            "ALTER TABLE albums ADD COLUMN date_created TEXT NOT NULL DEFAULT ''");
+        await db.execute(
+            "ALTER TABLE albums ADD COLUMN date_latest_modify TEXT NOT NULL DEFAULT ''");
+      } catch (_) {
+        // Columns may already exist in some edge cases; ignore.
+      }
+    }
+  }
+
   // ── Albums ──────────────────────────────────────────────────────────────────
 
   Future<List<AlbumModel>> getAllAlbums() async {
     final db = await database;
-    final rows = await db.query('albums', orderBy: 'name ASC');
+    final rows = await db.query('albums', orderBy: 'date_latest_modify DESC');
     return rows.map(AlbumModel.fromMap).toList();
   }
 
@@ -165,10 +186,12 @@ class DatabaseHelper {
     await db.transaction((txn) async {
       await txn.delete('album_tags',
           where: 'album_id = ?', whereArgs: [albumId]);
+      final batch = txn.batch();
       for (final tid in tagIds) {
-        await txn.insert('album_tags', {'album_id': albumId, 'tag_id': tid},
+        batch.insert('album_tags', {'album_id': albumId, 'tag_id': tid},
             conflictAlgorithm: ConflictAlgorithm.ignore);
       }
+      await batch.commit(noResult: true);
     });
   }
 
@@ -184,6 +207,18 @@ class DatabaseHelper {
     return rows.map((r) => r['asset_id'] as String).toList();
   }
 
+  /// Returns a union of asset IDs across the given album IDs.
+  Future<Set<String>> getAssetIdsForAlbums(Set<int> albumIds) async {
+    if (albumIds.isEmpty) return {};
+    final db = await database;
+    final placeholders = albumIds.map((_) => '?').join(',');
+    final rows = await db.rawQuery(
+      'SELECT DISTINCT asset_id FROM album_images WHERE album_id IN ($placeholders)',
+      albumIds.toList(),
+    );
+    return rows.map((r) => r['asset_id'] as String).toSet();
+  }
+
   Future<void> addImagesToAlbum(int albumId, List<String> assetIds) async {
     final db = await database;
     await db.transaction((txn) async {
@@ -193,13 +228,16 @@ class DatabaseHelper {
           whereArgs: [albumId]);
       final existingIds = existing.map((r) => r['asset_id'] as String).toSet();
       int idx = existingIds.length;
+      final batch = txn.batch();
       for (final aid in assetIds) {
         if (!existingIds.contains(aid)) {
-          await txn.insert('album_images',
+          batch.insert(
+              'album_images',
               {'album_id': albumId, 'asset_id': aid, 'sort_idx': idx++},
               conflictAlgorithm: ConflictAlgorithm.ignore);
         }
       }
+      await batch.commit(noResult: true);
     });
   }
 
@@ -261,10 +299,12 @@ class DatabaseHelper {
   Future<void> setSelectedOrder(List<String> orderedAssetIds) async {
     final db = await database;
     await db.transaction((txn) async {
+      final batch = txn.batch();
       for (int i = 0; i < orderedAssetIds.length; i++) {
-        await txn.update('selected_images', {'sort_idx': i},
+        batch.update('selected_images', {'sort_idx': i},
             where: 'asset_id = ?', whereArgs: [orderedAssetIds[i]]);
       }
+      await batch.commit(noResult: true);
     });
   }
 }

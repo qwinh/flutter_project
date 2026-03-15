@@ -1,6 +1,7 @@
 // lib/views/album_view.dart
 // Shows album details: name, description, favorite, tags, and a grid of images.
-// Supports inline editing (toggle with edit icon).
+// Supports inline editing. Shows "add selected images" badge button when
+// the global selection pool has images.
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -9,6 +10,7 @@ import 'package:provider/provider.dart';
 
 import '../models/models.dart';
 import '../providers/album_provider.dart';
+import '../providers/selection_provider.dart';
 import '../providers/tag_provider.dart';
 import '../services/notification_service.dart';
 import '../views/images_view.dart';
@@ -35,7 +37,9 @@ class _AlbumViewState extends State<AlbumView> {
   late TextEditingController _descCtrl;
   bool _isFavorite = false;
 
-  List<AssetEntity> _entities = [];
+  // Cache: assetId → AssetEntity? so we don't re-resolve on every rebuild.
+  final Map<String, AssetEntity?> _assetCache = {};
+  List<String> _assetIds = [];
   List<int> _tagIds = [];
   bool _loading = true;
 
@@ -70,15 +74,16 @@ class _AlbumViewState extends State<AlbumView> {
     final assetIds = await ap.getAssetIds(widget.albumId);
     final tagIds = await ap.getTagIds(widget.albumId);
 
-    final entities = <AssetEntity>[];
+    // Resolve only newly seen IDs (cache the rest)
     for (final id in assetIds) {
-      final e = await AssetEntity.fromId(id);
-      if (e != null) entities.add(e);
+      if (!_assetCache.containsKey(id)) {
+        _assetCache[id] = await AssetEntity.fromId(id);
+      }
     }
 
     if (mounted) {
       setState(() {
-        _entities = entities;
+        _assetIds = assetIds;
         _tagIds = tagIds;
         _loading = false;
       });
@@ -101,8 +106,8 @@ class _AlbumViewState extends State<AlbumView> {
 
     if (mounted) {
       setState(() => _editMode = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Album updated')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Album updated')));
     }
   }
 
@@ -118,14 +123,59 @@ class _AlbumViewState extends State<AlbumView> {
     if (result != null) setState(() => _tagIds = result);
   }
 
+  Future<void> _commitSelectedImages() async {
+    final selProv = context.read<SelectionProvider>();
+    final ap = context.read<AlbumProvider>();
+
+    if (selProv.count == 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No images selected.')));
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        final album = ap.getById(widget.albumId);
+        return AlertDialog(
+          title: const Text('Add Selected Images'),
+          content: Text(
+              'Add ${selProv.count} selected image(s) to "${album?.name}"?'),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel')),
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Add')),
+          ],
+        );
+      },
+    );
+
+    if (confirmed == true) {
+      await ap.addImagesToAlbum(widget.albumId, selProv.assetIds);
+      await selProv.clearAll();
+      // Reload to show the newly added images
+      setState(() {
+        _loading = true;
+      });
+      await _load();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Images added to album!')));
+      }
+    }
+  }
+
   Future<void> _removeSelectedImages() async {
     final ap = context.read<AlbumProvider>();
     for (final aid in _selectedAssetIds) {
       await ap.removeImageFromAlbum(widget.albumId, aid);
     }
     setState(() {
-      _entities =
-          _entities.where((e) => !_selectedAssetIds.contains(e.id)).toList();
+      _assetIds =
+          _assetIds.where((id) => !_selectedAssetIds.contains(id)).toList();
       _selectedAssetIds.clear();
       _selectionMode = false;
     });
@@ -137,6 +187,7 @@ class _AlbumViewState extends State<AlbumView> {
   Widget build(BuildContext context) {
     final ap = context.watch<AlbumProvider>();
     final tp = context.watch<TagProvider>();
+    final selProv = context.watch<SelectionProvider>();
     final album = ap.getById(widget.albumId);
 
     if (album == null) {
@@ -151,11 +202,15 @@ class _AlbumViewState extends State<AlbumView> {
         .whereType<String>()
         .toList();
 
+    // Build list of resolved entities in order
+    final entities = _assetIds
+        .map((id) => _assetCache[id])
+        .whereType<AssetEntity>()
+        .toList();
+
     return Scaffold(
       appBar: AppBar(
-        title: _editMode
-            ? const Text('Edit Album')
-            : Text(album.name),
+        title: _editMode ? const Text('Edit Album') : Text(album.name),
         actions: _selectionMode
             ? [
                 IconButton(
@@ -169,6 +224,16 @@ class _AlbumViewState extends State<AlbumView> {
                         })),
               ]
             : [
+                // Show badge button when global selection pool is non-empty
+                if (!_editMode && selProv.count > 0)
+                  IconButton(
+                    icon: Badge(
+                      label: Text('${selProv.count}'),
+                      child: const Icon(Icons.add_photo_alternate),
+                    ),
+                    tooltip: 'Add selected images',
+                    onPressed: _commitSelectedImages,
+                  ),
                 if (_editMode)
                   IconButton(
                     icon: const Icon(Icons.check),
@@ -204,13 +269,13 @@ class _AlbumViewState extends State<AlbumView> {
                           ),
                   ),
                 ),
-                if (_entities.isNotEmpty)
+                if (entities.isNotEmpty)
                   SliverPadding(
                     padding: const EdgeInsets.all(8),
                     sliver: SliverGrid(
                       delegate: SliverChildBuilderDelegate(
                         (ctx, i) {
-                          final e = _entities[i];
+                          final e = entities[i];
                           final selected =
                               _selectedAssetIds.contains(e.id);
                           return AssetThumb(
@@ -224,9 +289,9 @@ class _AlbumViewState extends State<AlbumView> {
                                       : _selectedAssetIds.add(e.id);
                                 });
                               } else {
-                                // Pass image list to ImageView via shared notifier
-                                context.read<FilteredListNotifier>()
-                                    .setList(_entities);
+                                context
+                                    .read<FilteredListNotifier>()
+                                    .setList(entities);
                                 context.push('/images/view/$i');
                               }
                             },
@@ -236,7 +301,7 @@ class _AlbumViewState extends State<AlbumView> {
                             }),
                           );
                         },
-                        childCount: _entities.length,
+                        childCount: entities.length,
                       ),
                       gridDelegate:
                           const SliverGridDelegateWithMaxCrossAxisExtent(
@@ -251,7 +316,15 @@ class _AlbumViewState extends State<AlbumView> {
                     child: Center(
                       child: Padding(
                         padding: EdgeInsets.all(32),
-                        child: Text('No images in this album yet.'),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.image_not_supported,
+                                size: 48, color: Colors.grey),
+                            SizedBox(height: 8),
+                            Text('No images in this album yet.'),
+                          ],
+                        ),
                       ),
                     ),
                   ),
@@ -269,6 +342,7 @@ class _ReadOnlyInfo extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -276,7 +350,7 @@ class _ReadOnlyInfo extends StatelessWidget {
           children: [
             Expanded(
               child: Text(album.name,
-                  style: Theme.of(context).textTheme.headlineSmall),
+                  style: theme.textTheme.headlineSmall),
             ),
             if (album.isFavorite)
               const Icon(Icons.favorite, color: Colors.pink),
@@ -284,18 +358,28 @@ class _ReadOnlyInfo extends StatelessWidget {
         ),
         if (album.description.isNotEmpty) ...[
           const SizedBox(height: 4),
-          Text(album.description),
+          Text(album.description,
+              style: TextStyle(color: theme.colorScheme.onSurfaceVariant)),
         ],
+        const SizedBox(height: 6),
+        Text(
+          'Modified ${_formatDate(album.dateLatestModify)}',
+          style: theme.textTheme.bodySmall
+              ?.copyWith(color: theme.colorScheme.outline),
+        ),
         if (tagNames.isNotEmpty) ...[
           const SizedBox(height: 8),
           Wrap(
             spacing: 6,
-            children:
-                tagNames.map((n) => Chip(label: Text(n))).toList(),
+            children: tagNames.map((n) => Chip(label: Text(n))).toList(),
           ),
         ],
       ],
     );
+  }
+
+  String _formatDate(DateTime dt) {
+    return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
   }
 }
 
@@ -342,7 +426,8 @@ class _EditForm extends StatelessWidget {
             const Text('Tags: '),
             Expanded(
               child: tagNames.isEmpty
-                  ? const Text('None', style: TextStyle(color: Colors.grey))
+                  ? const Text('None',
+                      style: TextStyle(color: Colors.grey))
                   : Wrap(
                       spacing: 4,
                       children: tagNames
@@ -361,5 +446,3 @@ class _EditForm extends StatelessWidget {
     );
   }
 }
-
-

@@ -1,11 +1,11 @@
 // lib/views/images_selected_view.dart
-// Shows the global selected images pool.
-// Drag-and-drop to reorder (in-memory only; persisted on save).
-// Actions: remove one, clear all, add to existing album, create new album.
+// Shows the global selection pool. Allows reordering, removing individual
+// images, clearing all, and committing to an album.
 
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'package:photo_manager_image_provider/photo_manager_image_provider.dart';
+import 'package:photo_manager/photo_manager.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/album_provider.dart';
@@ -13,13 +13,128 @@ import '../providers/selection_provider.dart';
 import '../services/notification_service.dart';
 import '../widgets/widgets.dart';
 
-class ImagesSelectedView extends StatelessWidget {
+class ImagesSelectedView extends StatefulWidget {
   const ImagesSelectedView({super.key});
+
+  @override
+  State<ImagesSelectedView> createState() => _ImagesSelectedViewState();
+}
+
+class _ImagesSelectedViewState extends State<ImagesSelectedView> {
+  final Map<String, AssetEntity?> _assetCache = {};
+  final Map<String, Uint8List?> _thumbnailCache = {};
+  bool _loading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _resolveAssets());
+  }
+
+  Future<void> _resolveAssets() async {
+    final selProv = context.read<SelectionProvider>();
+    if (selProv.assetIds.isEmpty) return;
+    setState(() => _loading = true);
+    for (final id in selProv.assetIds) {
+      if (!_assetCache.containsKey(id)) {
+        _assetCache[id] = await AssetEntity.fromId(id);
+      }
+    }
+    setState(() => _loading = false);
+  }
+
+  Future<void> _commitToAlbum() async {
+    final selProv = context.read<SelectionProvider>();
+    final ap = context.read<AlbumProvider>();
+
+    if (selProv.count == 0) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Nothing selected.')));
+      return;
+    }
+
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Commit to Album'),
+        content: const Text(
+            'Create a new album or add to an existing one?'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, 'cancel'),
+              child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, 'existing'),
+              child: const Text('Existing')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, 'new'),
+              child: const Text('New Album')),
+        ],
+      ),
+    );
+
+    if (!mounted) return;
+
+    if (choice == 'new') {
+      context.push('/albums/add');
+    } else if (choice == 'existing') {
+      await ap.load();
+      if (!mounted) return;
+
+      if (ap.albums.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+                content: Text('No albums. Create one first.')));
+        return;
+      }
+
+      final picked = await showDialog<int>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Choose Album'),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: ap.albums.length,
+              itemBuilder: (_, i) {
+                final a = ap.albums[i];
+                return ListTile(
+                  leading: const Icon(Icons.photo_album),
+                  title: Text(a.name),
+                  onTap: () => Navigator.pop(ctx, a.id),
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel')),
+          ],
+        ),
+      );
+
+      if (picked != null && mounted) {
+        await ap.addImagesToAlbum(picked, selProv.assetIds);
+        await selProv.clearAll();
+        setState(() => _assetCache.clear());
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                  content: Text(
+                      'Images added to "${ap.getById(picked)?.name}"!')));
+        }
+        await NotificationService.instance
+            .show('Images added', 'Selection committed to album.');
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     final selProv = context.watch<SelectionProvider>();
-    final entities = selProv.entities;
+    final ids = selProv.assetIds;
 
     return Scaffold(
       appBar: AppBar(
@@ -27,152 +142,156 @@ class ImagesSelectedView extends StatelessWidget {
         actions: [
           if (selProv.count > 0)
             IconButton(
-              icon: const Icon(Icons.delete_sweep_outlined),
+              icon: const Icon(Icons.clear_all),
               tooltip: 'Clear all',
               onPressed: () async {
-                final ok = await confirmDialog(
-                  context,
-                  title: 'Clear Selection',
-                  message: 'Remove all ${selProv.count} images from selection?',
-                  confirmLabel: 'Clear',
-                );
-                if (ok) await selProv.clearAll();
+                final ok = await confirmDialog(context,
+                    title: 'Clear All',
+                    message: 'Remove all ${selProv.count} selected images?',
+                    confirmLabel: 'Clear');
+                if (ok) {
+                  await selProv.clearAll();
+                  setState(() => _assetCache.clear());
+                }
               },
             ),
         ],
       ),
-      body: entities.isEmpty
-          ? const Center(
-              child: Text('No images selected.\nLong-press photos to select.',
-                  textAlign: TextAlign.center))
-          : Column(
-              children: [
-                // ── Action buttons ─────────────────────────────────────────
-                Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          icon: const Icon(Icons.photo_album_outlined),
-                          label: const Text('Add to album'),
-                          onPressed: () =>
-                              _showAddToAlbumDialog(context, selProv),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: FilledButton.icon(
-                          icon: const Icon(Icons.create_new_folder_outlined),
-                          label: const Text('New album'),
-                          onPressed: () => context.push('/albums/add'),
-                        ),
-                      ),
-                    ],
+      body: selProv.count == 0
+          ? Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.checklist, size: 64, color: Colors.grey[400]),
+                  const SizedBox(height: 16),
+                  Text('No images selected.',
+                      style: TextStyle(
+                          fontSize: 16, color: Colors.grey[600])),
+                  const SizedBox(height: 8),
+                  FilledButton.icon(
+                    onPressed: () => context.push('/images'),
+                    icon: const Icon(Icons.image_search),
+                    label: const Text('Browse Images'),
                   ),
+                ],
+              ),
+            )
+          : _loading
+              ? const Center(child: CircularProgressIndicator())
+              : ReorderableListView.builder(
+                  padding: const EdgeInsets.all(8),
+                  itemCount: ids.length,
+                  onReorder: (oldIdx, newIdx) {
+                    final newIds = List<String>.from(ids);
+                    if (oldIdx < newIdx) newIdx--;
+                    final item = newIds.removeAt(oldIdx);
+                    newIds.insert(newIdx, item);
+                    selProv.reorder(newIds);
+                  },
+                  itemBuilder: (ctx, i) {
+                    final id = ids[i];
+                    final entity = _assetCache[id];
+                    return _SelectedTile(
+                      key: ValueKey(id),
+                      entity: entity,
+                      thumbnailCache: _thumbnailCache,
+                      onRemove: () => selProv.deselect(id),
+                    );
+                  },
                 ),
-                const Divider(height: 1),
-
-                // ── Reorderable grid ───────────────────────────────────────
-                Expanded(
-                  child: ReorderableListView.builder(
-                    padding: const EdgeInsets.all(4),
-                    buildDefaultDragHandles: false,
-                    itemCount: entities.length,
-                    onReorder: (oldIdx, newIdx) {
-                      selProv.reorder(oldIdx, newIdx);
-                      // Persist new order
-                      selProv.persistOrder();
-                    },
-                    itemBuilder: (ctx, i) {
-                      final e = entities[i];
-                      return SizedBox(
-                        key: ValueKey(e.id),
-                        height: 88,
-                        child: ListTile(
-                          contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 4),
-                          leading: ClipRRect(
-                            borderRadius: BorderRadius.circular(6),
-                            child: SizedBox(
-                              width: 72,
-                              height: 72,
-                              child: AssetEntityImage(
-                                e,
-                                isOriginal: false,
-                                fit: BoxFit.cover,
-                              ),
-                            ),
-                          ),
-                          title: Text(
-                            e.title ?? 'Image ${i + 1}',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          subtitle: Text(
-                              '${e.width} × ${e.height}',
-                              style: const TextStyle(fontSize: 12)),
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              IconButton(
-                                icon: const Icon(Icons.remove_circle_outline),
-                                onPressed: () =>
-                                    selProv.removeOne(e.id),
-                              ),
-                              // Drag handle
-                              ReorderableDragStartListener(
-                                index: i,
-                                child: const Icon(Icons.drag_handle),
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
+      bottomNavigationBar: selProv.count > 0
+          ? Padding(
+              padding: const EdgeInsets.all(16),
+              child: FilledButton.icon(
+                onPressed: _commitToAlbum,
+                icon: const Icon(Icons.save),
+                label: const Text('Commit to Album'),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size(double.infinity, 52),
                 ),
-              ],
-            ),
+              ),
+            )
+          : null,
     );
   }
+}
 
-  Future<void> _showAddToAlbumDialog(
-      BuildContext context, SelectionProvider selProv) async {
-    final ap = context.read<AlbumProvider>();
-    if (ap.albums.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No albums yet. Create one first.')));
+class _SelectedTile extends StatefulWidget {
+  final AssetEntity? entity;
+  final Map<String, Uint8List?> thumbnailCache;
+  final VoidCallback onRemove;
+
+  const _SelectedTile({
+    super.key,
+    required this.entity,
+    required this.thumbnailCache,
+    required this.onRemove,
+  });
+
+  @override
+  State<_SelectedTile> createState() => _SelectedTileState();
+}
+
+class _SelectedTileState extends State<_SelectedTile> {
+  Uint8List? _bytes;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadThumbnail();
+  }
+
+  Future<void> _loadThumbnail() async {
+    final entity = widget.entity;
+    if (entity == null) return;
+    final cached = widget.thumbnailCache[entity.id];
+    if (cached != null) {
+      setState(() => _bytes = cached);
       return;
     }
+    final bytes =
+        await entity.thumbnailDataWithSize(const ThumbnailSize(200, 200));
+    widget.thumbnailCache[entity.id] = bytes;
+    if (mounted) setState(() => _bytes = bytes);
+  }
 
-    final chosen = await showDialog<int>(
-      context: context,
-      builder: (ctx) => SimpleDialog(
-        title: const Text('Add to album'),
-        children: ap.albums
-            .map((a) => SimpleDialogOption(
-                  onPressed: () => Navigator.pop(ctx, a.id),
-                  child: Text(a.name),
-                ))
-            .toList(),
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      contentPadding:
+          const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      leading: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: SizedBox(
+          width: 56,
+          height: 56,
+          child: _bytes != null
+              ? Image.memory(_bytes!, fit: BoxFit.cover)
+              : Container(
+                  color: Colors.grey[300],
+                  child: const Icon(Icons.image),
+                ),
+        ),
+      ),
+      title: Text(widget.entity?.title ?? 'Unknown',
+          maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: widget.entity != null
+          ? Text(
+              '${widget.entity!.width}×${widget.entity!.height}',
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
+            )
+          : null,
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            icon: const Icon(Icons.remove_circle_outline),
+            color: Colors.red,
+            onPressed: widget.onRemove,
+          ),
+          const Icon(Icons.drag_handle, color: Colors.grey),
+        ],
       ),
     );
-
-    if (chosen == null) return;
-
-    final assetIds = selProv.assetIds;
-    await ap.addImagesToAlbum(chosen, assetIds);
-    await selProv.clearAll();
-
-    final albumName = ap.getById(chosen)?.name ?? '';
-    await NotificationService.instance
-        .show('Images added', 'Added to "$albumName".');
-
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Added ${assetIds.length} image(s) to "$albumName"')));
-    }
   }
 }

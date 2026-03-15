@@ -1,11 +1,11 @@
 // lib/router/app_router.dart
-// Defines all routes using go_router 14.x with custom page transitions.
+// App-wide routing with go_router 14.x.
+// Uses ShellRoute with bottom NavigationBar for top-level tabs.
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
-// import '../providers/album_provider.dart';
 import '../views/albums_view.dart';
 import '../views/album_view.dart';
 import '../views/album_add_view.dart';
@@ -24,39 +24,38 @@ final appRouter = GoRouter(
       navigatorKey: _shellKey,
       builder: (context, state, child) => _ScaffoldShell(child: child),
       routes: [
-        // ── Images ────────────────────────────────────────────────────────
+        // ── Images tab ─────────────────────────────────────────────────────
         GoRoute(
           path: '/images',
-          pageBuilder: (context, state) => _fadePage(
-            state,
-            const ImagesView(),
-          ),
+          pageBuilder: (ctx, state) =>
+              _fadePage(state, const ImagesView()),
           routes: [
             GoRoute(
               path: 'view/:index',
               parentNavigatorKey: _shellKey,
-              pageBuilder: (context, state) {
-                final index =
+              pageBuilder: (ctx, state) {
+                final idx =
                     int.tryParse(state.pathParameters['index'] ?? '0') ?? 0;
-                return _scalePage(state, ImageView(initialIndex: index));
+                return _scalePage(state, ImageView(initialIndex: idx));
               },
             ),
           ],
         ),
 
-        // ── Albums ─────────────────────────────────────────────────────────
+        // ── Albums tab ─────────────────────────────────────────────────────
         GoRoute(
           path: '/albums',
-          pageBuilder: (context, state) => _fadePage(state, const AlbumsView()),
+          pageBuilder: (ctx, state) =>
+              _fadePage(state, const AlbumsView()),
           routes: [
             GoRoute(
               path: 'add',
-              pageBuilder: (context, state) =>
+              pageBuilder: (ctx, state) =>
                   _slidePage(state, const AlbumAddView()),
             ),
             GoRoute(
               path: ':id',
-              pageBuilder: (context, state) {
+              pageBuilder: (ctx, state) {
                 final id = int.parse(state.pathParameters['id']!);
                 final editMode =
                     state.uri.queryParameters['edit'] == 'true';
@@ -67,16 +66,17 @@ final appRouter = GoRouter(
           ],
         ),
 
-        // ── Tags ───────────────────────────────────────────────────────────
+        // ── Tags tab ───────────────────────────────────────────────────────
         GoRoute(
           path: '/tags',
-          pageBuilder: (context, state) => _fadePage(state, const TagsView()),
+          pageBuilder: (ctx, state) =>
+              _fadePage(state, const TagsView()),
         ),
 
-        // ── Selected images ────────────────────────────────────────────────
+        // ── Selected tab ───────────────────────────────────────────────────
         GoRoute(
           path: '/selected',
-          pageBuilder: (context, state) =>
+          pageBuilder: (ctx, state) =>
               _slidePage(state, const ImagesSelectedView()),
         ),
       ],
@@ -84,13 +84,13 @@ final appRouter = GoRouter(
   ],
 );
 
-// ── Transition helpers ────────────────────────────────────────────────────────
+// ── Transition helpers ─────────────────────────────────────────────────────────
 
 CustomTransitionPage<void> _fadePage(GoRouterState state, Widget child) {
   return CustomTransitionPage<void>(
     key: state.pageKey,
     child: child,
-    transitionDuration: const Duration(milliseconds: 250),
+    transitionDuration: const Duration(milliseconds: 220),
     transitionsBuilder: (_, animation, __, child) =>
         FadeTransition(opacity: animation, child: child),
   );
@@ -100,12 +100,12 @@ CustomTransitionPage<void> _slidePage(GoRouterState state, Widget child) {
   return CustomTransitionPage<void>(
     key: state.pageKey,
     child: child,
-    transitionDuration: const Duration(milliseconds: 300),
+    transitionDuration: const Duration(milliseconds: 280),
     transitionsBuilder: (_, animation, __, child) {
       final offset =
-          Tween<Offset>(begin: const Offset(1, 0), end: Offset.zero)
-              .animate(CurvedAnimation(
-                  parent: animation, curve: Curves.easeInOut));
+          Tween<Offset>(begin: const Offset(1, 0), end: Offset.zero).animate(
+        CurvedAnimation(parent: animation, curve: Curves.easeInOut),
+      );
       return SlideTransition(position: offset, child: child);
     },
   );
@@ -115,10 +115,11 @@ CustomTransitionPage<void> _scalePage(GoRouterState state, Widget child) {
   return CustomTransitionPage<void>(
     key: state.pageKey,
     child: child,
-    transitionDuration: const Duration(milliseconds: 280),
+    transitionDuration: const Duration(milliseconds: 260),
     transitionsBuilder: (_, animation, __, child) {
       final scale = Tween<double>(begin: 0.85, end: 1.0).animate(
-          CurvedAnimation(parent: animation, curve: Curves.easeOut));
+        CurvedAnimation(parent: animation, curve: Curves.easeOut),
+      );
       return ScaleTransition(scale: scale, child: child);
     },
   );
@@ -152,26 +153,24 @@ class _ScaffoldShell extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final currentIdx = _currentIndex(context);
-    final selectionCount =
-        context.watch<SelectionCountNotifier>().count;
+    final selectionCount = context.watch<SelectionCountNotifier>().count;
 
     return Scaffold(
       body: child,
       bottomNavigationBar: NavigationBar(
         selectedIndex: currentIdx,
-        onDestinationSelected: (idx) =>
-            context.go(_tabs[idx].path),
+        onDestinationSelected: (idx) => context.go(_tabs[idx].path),
         destinations: _tabs.map((t) {
           Widget icon = Icon(t.icon);
           Widget activeIcon = Icon(t.activeIcon);
           if (t.path == '/selected' && selectionCount > 0) {
-            activeIcon = Badge(
-              label: Text('$selectionCount'),
-              child: Icon(t.activeIcon),
-            );
             icon = Badge(
               label: Text('$selectionCount'),
               child: Icon(t.icon),
+            );
+            activeIcon = Badge(
+              label: Text('$selectionCount'),
+              child: Icon(t.activeIcon),
             );
           }
           return NavigationDestination(
@@ -185,8 +184,8 @@ class _ScaffoldShell extends StatelessWidget {
   }
 }
 
-/// A tiny ChangeNotifier that the shell listens to for badge updates.
-/// Wrap it around MaterialApp and update via SelectionProvider listener.
+/// A tiny ChangeNotifier driven by SelectionProvider listener in main.dart.
+/// Kept here because it's consumed in the shell build.
 class SelectionCountNotifier extends ChangeNotifier {
   int _count = 0;
   int get count => _count;

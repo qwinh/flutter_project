@@ -1,5 +1,5 @@
 // lib/providers/selection_provider.dart
-// Manages the global selected-images pool (persisted in SQLite).
+// Manages the globally selected image pool (persisted across sessions).
 
 import 'package:flutter/foundation.dart';
 import 'package:photo_manager/photo_manager.dart';
@@ -9,15 +9,15 @@ import '../db/database_helper.dart';
 class SelectionProvider extends ChangeNotifier {
   final _db = DatabaseHelper.instance;
 
-  /// Ordered list of selected asset IDs (persisted).
+  // Ordered list of asset IDs
   List<String> _assetIds = [];
   List<String> get assetIds => List.unmodifiable(_assetIds);
 
-  /// Resolved AssetEntity objects (populated lazily/on demand).
-  List<AssetEntity> _entities = [];
-  List<AssetEntity> get entities => List.unmodifiable(_entities);
+  // Resolved AssetEntity objects (may be null if device removed the image)
+  final Map<String, AssetEntity> _entities = {};
+  List<AssetEntity> get entities =>
+      _assetIds.map((id) => _entities[id]).whereType<AssetEntity>().toList();
 
-  bool get isEmpty => _assetIds.isEmpty;
   int get count => _assetIds.length;
 
   bool isSelected(String assetId) => _assetIds.contains(assetId);
@@ -28,77 +28,50 @@ class SelectionProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> toggle(String assetId) async {
-    if (_assetIds.contains(assetId)) {
-      await _db.removeFromSelected(assetId);
-      _assetIds = List.from(_assetIds)..remove(assetId);
-    } else {
-      await _db.addToSelected(assetId);
-      _assetIds = List.from(_assetIds)..add(assetId);
+  Future<void> _resolveEntities() async {
+    for (final id in _assetIds) {
+      if (!_entities.containsKey(id)) {
+        final e = await AssetEntity.fromId(id);
+        if (e != null) _entities[id] = e;
+      }
     }
-    await _resolveEntities();
-    notifyListeners();
   }
 
-  /// Selects [assetId] if not already selected.
-  /// Skips entity resolution for speed — used by drag-to-select where
-  /// resolution on every frame would cause jank.
   Future<void> select(String assetId) async {
     if (_assetIds.contains(assetId)) return;
     await _db.addToSelected(assetId);
-    _assetIds = List.from(_assetIds)..add(assetId);
+    _assetIds = [..._assetIds, assetId];
+    final e = await AssetEntity.fromId(assetId);
+    if (e != null) _entities[assetId] = e;
     notifyListeners();
   }
 
-  /// Deselects [assetId] if currently selected.
-  /// Same performance trade-off as [select].
   Future<void> deselect(String assetId) async {
     if (!_assetIds.contains(assetId)) return;
     await _db.removeFromSelected(assetId);
-    _assetIds = List.from(_assetIds)..remove(assetId);
+    _assetIds = _assetIds.where((id) => id != assetId).toList();
+    _entities.remove(assetId);
     notifyListeners();
   }
 
-  Future<void> removeOne(String assetId) async {
-    await _db.removeFromSelected(assetId);
-    _assetIds = List.from(_assetIds)..remove(assetId);
-    _entities = _entities.where((e) => e.id != assetId).toList();
-    notifyListeners();
+  Future<void> toggle(String assetId) async {
+    if (isSelected(assetId)) {
+      await deselect(assetId);
+    } else {
+      await select(assetId);
+    }
   }
 
   Future<void> clearAll() async {
     await _db.clearSelected();
     _assetIds = [];
-    _entities = [];
+    _entities.clear();
     notifyListeners();
   }
 
-  /// Reorder in-memory only; call [persistOrder] to save.
-  void reorder(int oldIndex, int newIndex) {
-    if (newIndex > oldIndex) newIndex--;
-    final idsCopy = List<String>.from(_assetIds);
-    final entCopy = List<AssetEntity>.from(_entities);
-    final id = idsCopy.removeAt(oldIndex);
-    idsCopy.insert(newIndex, id);
-    if (oldIndex < entCopy.length) {
-      final ent = entCopy.removeAt(oldIndex);
-      entCopy.insert(newIndex, ent);
-    }
-    _assetIds = idsCopy;
-    _entities = entCopy;
+  Future<void> reorder(List<String> orderedIds) async {
+    _assetIds = orderedIds;
+    await _db.setSelectedOrder(orderedIds);
     notifyListeners();
-  }
-
-  Future<void> persistOrder() async {
-    await _db.setSelectedOrder(_assetIds);
-  }
-
-  Future<void> _resolveEntities() async {
-    final resolved = <AssetEntity>[];
-    for (final id in _assetIds) {
-      final entity = await AssetEntity.fromId(id);
-      if (entity != null) resolved.add(entity);
-    }
-    _entities = resolved;
   }
 }
