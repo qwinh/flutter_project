@@ -66,6 +66,44 @@ class SelectionProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Selects all [assetIds] not already selected. Batched single DB write.
+  Future<void> addMultiple(Set<String> assetIds) async {
+    final toAdd = assetIds.where((id) => !_assetIds.contains(id)).toList();
+    if (toAdd.isEmpty) return;
+    await _db.addMultipleToSelected(toAdd);
+    _assetIds = List.from(_assetIds)..addAll(toAdd);
+    notifyListeners();
+  }
+
+  /// Deselects all [assetIds] that are currently selected. Batched single DB write.
+  Future<void> removeMultiple(Set<String> assetIds) async {
+    final toRemove = assetIds.where((id) => _assetIds.contains(id)).toList();
+    if (toRemove.isEmpty) return;
+    await _db.removeMultipleFromSelected(toRemove);
+    final removeSet = toRemove.toSet();
+    _assetIds = _assetIds.where((id) => !removeSet.contains(id)).toList();
+    notifyListeners();
+  }
+
+  /// Atomically sets selection to exactly [desired]. Computes the diff and
+  /// issues a single batch add and a single batch remove. Used by drag-select
+  /// to keep the DB consistent during a sweep without per-item writes.
+  Future<void> setSelection(Set<String> desired) async {
+    final current = _assetIds.toSet();
+    final toAdd = desired.difference(current).toList();
+    final toRemove = current.difference(desired).toList();
+    if (toAdd.isEmpty && toRemove.isEmpty) return;
+    if (toAdd.isNotEmpty) await _db.addMultipleToSelected(toAdd);
+    if (toRemove.isNotEmpty) await _db.removeMultipleFromSelected(toRemove);
+    // Preserve order of previously-selected items; append newly added ones.
+    final newIds = _assetIds
+        .where((id) => !toRemove.contains(id))
+        .toList()
+      ..addAll(toAdd);
+    _assetIds = newIds;
+    notifyListeners();
+  }
+
   Future<void> clearAll() async {
     await _db.clearSelected();
     _assetIds = [];

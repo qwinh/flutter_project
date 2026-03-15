@@ -311,4 +311,35 @@ class DatabaseHelper {
       }
     });
   }
+
+  /// Inserts multiple asset IDs in a single batch transaction.
+  /// Assigns sequential sort_idx values starting after the current maximum.
+  Future<void> addMultipleToSelected(List<String> assetIds) async {
+    if (assetIds.isEmpty) return;
+    final db = await database;
+    await db.transaction((txn) async {
+      final rows =
+          await txn.rawQuery('SELECT MAX(sort_idx) as m FROM selected_images');
+      int maxIdx = (rows.first['m'] as int?) ?? -1;
+      for (final id in assetIds) {
+        maxIdx++;
+        await txn.insert(
+          'selected_images',
+          {'asset_id': id, 'sort_idx': maxIdx},
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+      }
+    });
+  }
+
+  /// Removes multiple asset IDs in a single batch transaction.
+  Future<void> removeMultipleFromSelected(List<String> assetIds) async {
+    if (assetIds.isEmpty) return;
+    final db = await database;
+    final batch = db.batch();
+    for (final id in assetIds) {
+      batch.delete('selected_images', where: 'asset_id = ?', whereArgs: [id]);
+    }
+    await batch.commit(noResult: true);
+  }
 }
