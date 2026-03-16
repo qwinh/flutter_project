@@ -4,6 +4,7 @@
 // _assetIds  — ordered list, drives UI and DB persistence
 // _selectedSet — mirrors _assetIds for O(1) isSelected() lookups
 // _entities  — resolved AssetEntity objects, lazy (call resolveEntities())
+// _maxSortIdx — tracked in memory to avoid a MAX() query on every insert
 //
 // All async mutations update _selectedSet BEFORE awaiting DB so that
 // concurrent calls (e.g. rapid drag events) see a consistent in-memory
@@ -27,6 +28,10 @@ class SelectionProvider extends ChangeNotifier {
 
   bool _entitiesDirty = false;
 
+  // Tracks the highest sort_idx currently in the DB to avoid a MAX() query
+  // on every single-item insert.
+  int _maxSortIdx = -1;
+
   bool get isEmpty => _assetIds.isEmpty;
   int get count => _assetIds.length;
 
@@ -37,20 +42,20 @@ class SelectionProvider extends ChangeNotifier {
   Future<void> load() async {
     _assetIds = await _db.getSelectedAssetIds();
     _selectedSet..clear()..addAll(_assetIds);
+    _maxSortIdx = _assetIds.isEmpty ? -1 : _assetIds.length - 1;
     _entitiesDirty = true;
     notifyListeners();
   }
 
-  // ── Entity resolution (lazy) ──────────────────────────────────────────────
+  // ── Entity resolution (lazy, parallel) ───────────────────────────────────
 
   Future<void> resolveEntities() async {
     if (!_entitiesDirty) return;
-    final resolved = <AssetEntity>[];
-    for (final id in List.of(_assetIds)) {
-      final e = await AssetEntity.fromId(id);
-      if (e != null) resolved.add(e);
-    }
-    _entities = resolved;
+    final snapshot = List.of(_assetIds);
+    final resolved = await Future.wait(
+      snapshot.map((id) => AssetEntity.fromId(id)),
+    );
+    _entities = resolved.whereType<AssetEntity>().toList();
     _entitiesDirty = false;
     notifyListeners();
   }
@@ -65,21 +70,23 @@ class SelectionProvider extends ChangeNotifier {
       notifyListeners();
       await _db.removeFromSelected(id);
     } else {
+      _maxSortIdx++;
       _assetIds = List.from(_assetIds)..add(id);
       _selectedSet.add(id);
       _entitiesDirty = true;
       notifyListeners();
-      await _db.addToSelected(id);
+      await _db.addToSelected(id, _maxSortIdx);
     }
   }
 
   Future<void> select(String id) async {
     if (_selectedSet.contains(id)) return;
+    _maxSortIdx++;
     _assetIds = List.from(_assetIds)..add(id);
     _selectedSet.add(id);
     _entitiesDirty = true;
     notifyListeners();
-    await _db.addToSelected(id);
+    await _db.addToSelected(id, _maxSortIdx);
   }
 
   Future<void> deselect(String id) async {
@@ -107,11 +114,13 @@ class SelectionProvider extends ChangeNotifier {
   Future<void> addMultiple(Set<String> ids) async {
     final toAdd = ids.where((id) => !_selectedSet.contains(id)).toList();
     if (toAdd.isEmpty) return;
+    final startIdx = _maxSortIdx + 1;
+    _maxSortIdx += toAdd.length;
     _assetIds = List.from(_assetIds)..addAll(toAdd);
     _selectedSet.addAll(toAdd);
     _entitiesDirty = true;
     notifyListeners();
-    await _db.addMultipleToSelected(toAdd);
+    await _db.addMultipleToSelected(toAdd, startIdx);
   }
 
   Future<void> removeMultiple(Set<String> ids) async {
@@ -126,14 +135,14 @@ class SelectionProvider extends ChangeNotifier {
   }
 
   /// Atomically sets selection to exactly [desired].
-  /// Updates in-memory state immediately before any DB writes so rapid
-  /// concurrent calls (drag sweep) see consistent state.
   Future<void> setSelection(Set<String> desired) async {
     final toAdd = desired.difference(_selectedSet).toList();
     final toRemove = _selectedSet.difference(desired).toList();
     if (toAdd.isEmpty && toRemove.isEmpty) return;
 
-    // Update in-memory first.
+    final startIdx = _maxSortIdx + 1;
+    _maxSortIdx += toAdd.length;
+
     final removeSet = toRemove.toSet();
     _assetIds = [
       ..._assetIds.where((id) => !removeSet.contains(id)),
@@ -143,8 +152,7 @@ class SelectionProvider extends ChangeNotifier {
     _entitiesDirty = true;
     notifyListeners();
 
-    // Persist asynchronously.
-    if (toAdd.isNotEmpty) await _db.addMultipleToSelected(toAdd);
+    if (toAdd.isNotEmpty) await _db.addMultipleToSelected(toAdd, startIdx);
     if (toRemove.isNotEmpty) await _db.removeMultipleFromSelected(toRemove);
   }
 
@@ -152,6 +160,7 @@ class SelectionProvider extends ChangeNotifier {
     _assetIds = [];
     _selectedSet.clear();
     _entities = [];
+    _maxSortIdx = -1;
     _entitiesDirty = false;
     notifyListeners();
     await _db.clearSelected();

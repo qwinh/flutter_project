@@ -10,7 +10,7 @@ import '../models/models.dart';
 
 class DatabaseHelper {
   static const _dbName = 'photovault.db';
-  static const _dbVersion = 2;
+  static const _dbVersion = 3;
 
   DatabaseHelper._();
   static final DatabaseHelper instance = DatabaseHelper._();
@@ -42,10 +42,12 @@ class DatabaseHelper {
       )
     ''');
 
+    // COLLATE NOCASE so the UNIQUE constraint is case-insensitive,
+    // consistent with the tagNameExists application-level check.
     await db.execute('''
       CREATE TABLE tags (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        name        TEXT    NOT NULL UNIQUE,
+        name        TEXT    NOT NULL UNIQUE COLLATE NOCASE,
         description TEXT    NOT NULL DEFAULT ''
       )
     ''');
@@ -80,11 +82,17 @@ class DatabaseHelper {
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
-      // Add UNIQUE constraint to tags.name via a table rebuild (SQLite does
-      // not support ADD CONSTRAINT on existing tables).
       await db.execute(
           'CREATE TABLE tags_new (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL DEFAULT \'\')');
-      // Copy rows; on conflict keep the first occurrence (lowest id).
+      await db.execute(
+          'INSERT OR IGNORE INTO tags_new (id, name, description) SELECT id, name, description FROM tags ORDER BY id ASC');
+      await db.execute('DROP TABLE tags');
+      await db.execute('ALTER TABLE tags_new RENAME TO tags');
+    }
+    if (oldVersion < 3) {
+      // Add COLLATE NOCASE to tags.name UNIQUE constraint via table rebuild.
+      await db.execute(
+          'CREATE TABLE tags_new (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE, description TEXT NOT NULL DEFAULT \'\')');
       await db.execute(
           'INSERT OR IGNORE INTO tags_new (id, name, description) SELECT id, name, description FROM tags ORDER BY id ASC');
       await db.execute('DROP TABLE tags');
@@ -127,14 +135,15 @@ class DatabaseHelper {
 
   /// Returns true if a tag with [name] already exists, optionally
   /// excluding [excludeId] (used when renaming an existing tag).
+  /// The comparison is case-insensitive, matching the COLLATE NOCASE constraint.
   Future<bool> tagNameExists(String name, {int? excludeId}) async {
     final db = await database;
     final rows = await db.query(
       'tags',
       columns: ['id'],
       where: excludeId != null
-          ? 'LOWER(name) = LOWER(?) AND id != ?'
-          : 'LOWER(name) = LOWER(?)',
+          ? 'name = ? AND id != ?'
+          : 'name = ?',
       whereArgs: excludeId != null ? [name, excludeId] : [name],
       limit: 1,
     );
@@ -240,6 +249,19 @@ class DatabaseHelper {
         where: 'album_id = ? AND asset_id = ?', whereArgs: [albumId, assetId]);
   }
 
+  /// Removes multiple asset IDs from an album in a single transaction.
+  Future<void> removeImagesFromAlbum(int albumId, List<String> assetIds) async {
+    if (assetIds.isEmpty) return;
+    final db = await database;
+    await db.transaction((txn) async {
+      final placeholders = List.filled(assetIds.length, '?').join(', ');
+      await txn.rawDelete(
+        'DELETE FROM album_images WHERE album_id = ? AND asset_id IN ($placeholders)',
+        [albumId, ...assetIds],
+      );
+    });
+  }
+
   /// Returns all unique asset IDs that belong to at least one album.
   Future<Set<String>> getAllAlbumAssetIds() async {
     final db = await database;
@@ -281,13 +303,10 @@ class DatabaseHelper {
     return rows.map((r) => r['asset_id'] as String).toList();
   }
 
-  Future<void> addToSelected(String assetId) async {
+  Future<void> addToSelected(String assetId, int sortIdx) async {
     final db = await database;
-    final rows = await db
-        .rawQuery('SELECT MAX(sort_idx) as m FROM selected_images');
-    final maxIdx = (rows.first['m'] as int?) ?? -1;
     await db.insert(
-        'selected_images', {'asset_id': assetId, 'sort_idx': maxIdx + 1},
+        'selected_images', {'asset_id': assetId, 'sort_idx': sortIdx},
         conflictAlgorithm: ConflictAlgorithm.ignore);
   }
 
@@ -302,30 +321,33 @@ class DatabaseHelper {
     await db.delete('selected_images');
   }
 
+  /// Updates sort order using a single CASE WHEN statement — O(1) round-trips.
   Future<void> setSelectedOrder(List<String> orderedAssetIds) async {
+    if (orderedAssetIds.isEmpty) return;
     final db = await database;
-    await db.transaction((txn) async {
-      for (int i = 0; i < orderedAssetIds.length; i++) {
-        await txn.update('selected_images', {'sort_idx': i},
-            where: 'asset_id = ?', whereArgs: [orderedAssetIds[i]]);
-      }
-    });
+    final cases = StringBuffer('CASE asset_id ');
+    for (int i = 0; i < orderedAssetIds.length; i++) {
+      cases.write("WHEN ? THEN $i ");
+    }
+    cases.write('END');
+    final placeholders = List.filled(orderedAssetIds.length, '?').join(', ');
+    await db.rawUpdate(
+      'UPDATE selected_images SET sort_idx = $cases WHERE asset_id IN ($placeholders)',
+      [...orderedAssetIds, ...orderedAssetIds],
+    );
   }
 
   /// Inserts multiple asset IDs in a single batch transaction.
-  /// Assigns sequential sort_idx values starting after the current maximum.
-  Future<void> addMultipleToSelected(List<String> assetIds) async {
+  /// [startIdx] is the sort_idx for the first item; subsequent items increment.
+  Future<void> addMultipleToSelected(
+      List<String> assetIds, int startIdx) async {
     if (assetIds.isEmpty) return;
     final db = await database;
     await db.transaction((txn) async {
-      final rows =
-          await txn.rawQuery('SELECT MAX(sort_idx) as m FROM selected_images');
-      int maxIdx = (rows.first['m'] as int?) ?? -1;
-      for (final id in assetIds) {
-        maxIdx++;
+      for (int i = 0; i < assetIds.length; i++) {
         await txn.insert(
           'selected_images',
-          {'asset_id': id, 'sort_idx': maxIdx},
+          {'asset_id': assetIds[i], 'sort_idx': startIdx + i},
           conflictAlgorithm: ConflictAlgorithm.ignore,
         );
       }

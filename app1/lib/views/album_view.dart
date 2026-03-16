@@ -9,9 +9,9 @@ import 'package:provider/provider.dart';
 
 import '../models/models.dart';
 import '../providers/album_provider.dart';
+import '../providers/notifiers.dart';
 import '../providers/tag_provider.dart';
 import '../services/notification_service.dart';
-import '../views/images_view.dart';
 import '../widgets/widgets.dart';
 
 class AlbumView extends StatefulWidget {
@@ -70,11 +70,11 @@ class _AlbumViewState extends State<AlbumView> {
     final assetIds = await ap.getAssetIds(widget.albumId);
     final tagIds = await ap.getTagIds(widget.albumId);
 
-    final entities = <AssetEntity>[];
-    for (final id in assetIds) {
-      final e = await AssetEntity.fromId(id);
-      if (e != null) entities.add(e);
-    }
+    // Resolve all AssetEntities in parallel.
+    final resolved = await Future.wait(
+      assetIds.map((id) => AssetEntity.fromId(id)),
+    );
+    final entities = resolved.whereType<AssetEntity>().toList();
 
     if (mounted) {
       setState(() {
@@ -120,12 +120,12 @@ class _AlbumViewState extends State<AlbumView> {
 
   Future<void> _removeSelectedImages() async {
     final ap = context.read<AlbumProvider>();
-    for (final aid in _selectedAssetIds) {
-      await ap.removeImageFromAlbum(widget.albumId, aid);
-    }
+    final toRemove = List.of(_selectedAssetIds);
+    // Single bulk DB transaction instead of N sequential calls.
+    await ap.removeImagesFromAlbum(widget.albumId, toRemove);
+    final removeSet = toRemove.toSet();
     setState(() {
-      _entities =
-          _entities.where((e) => !_selectedAssetIds.contains(e.id)).toList();
+      _entities = _entities.where((e) => !removeSet.contains(e.id)).toList();
       _selectedAssetIds.clear();
       _selectionMode = false;
     });
@@ -226,7 +226,6 @@ class _AlbumViewState extends State<AlbumView> {
                                       : _selectedAssetIds.add(e.id);
                                 });
                               } else {
-                                // Pass image list to ImageView via shared notifier
                                 context.read<FilteredListNotifier>()
                                     .setList(_entities);
                                 context.push('/images/view/$i');

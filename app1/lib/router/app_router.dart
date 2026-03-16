@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
-// import '../providers/album_provider.dart';
+import '../providers/notifiers.dart';
 import '../views/albums_view.dart';
 import '../views/album_view.dart';
 import '../views/album_add_view.dart';
@@ -13,6 +13,8 @@ import '../views/tags_view.dart';
 import '../views/images_view.dart';
 import '../views/image_view.dart';
 import '../views/images_selected_view.dart';
+
+export '../providers/notifiers.dart' show SelectionCountNotifier;
 
 // Shared key so ShellRoute keeps the bottom nav bar alive.
 final _shellKey = GlobalKey<NavigatorState>(debugLabel: 'shell');
@@ -182,19 +184,5 @@ class _ScaffoldShell extends StatelessWidget {
         }).toList(),
       ),
     );
-  }
-}
-
-/// A tiny ChangeNotifier that the shell listens to for badge updates.
-/// Wrap it around MaterialApp and update via SelectionProvider listener.
-class SelectionCountNotifier extends ChangeNotifier {
-  int _count = 0;
-  int get count => _count;
-
-  void update(int count) {
-    if (_count != count) {
-      _count = count;
-      notifyListeners();
-    }
   }
 }

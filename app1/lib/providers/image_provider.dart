@@ -4,14 +4,13 @@ import 'package:flutter/foundation.dart';
 import 'package:photo_manager/photo_manager.dart';
 import '../db/database_helper.dart';
 
+export 'notifiers.dart' show FilteredListNotifier;
+
 enum SortOrder { dateDesc, dateAsc, nameAsc, nameDesc }
 
 class ImageFilterState {
   final Set<int> includeAlbumIds;
   final Set<int> excludeAlbumIds;
-  // Applies to the combined include+exclude set:
-  // true  (ALL) = in(A) AND not_in(B) AND ...
-  // false (ANY) = in(A) OR  not_in(B) OR  ...
   final bool albumFilterAnd;
   final bool onlyFavoriteAlbums;
   final int? minWidth;
@@ -107,20 +106,16 @@ class DeviceImageProvider extends ChangeNotifier {
   Future<void> _applyFilters() async {
     final f = _filterState;
 
-    // Pre-fetch album asset sets.
-    for (final id in {...f.includeAlbumIds, ...f.excludeAlbumIds}) {
-      await _cacheAlbum(id);
-    }
+    // Pre-fetch album asset sets in parallel.
+    await Future.wait(
+      {...f.includeAlbumIds, ...f.excludeAlbumIds}.map(_cacheAlbum),
+    );
     if (f.onlyFavoriteAlbums) {
       _favoriteAssetIds = await _db.getFavoriteAlbumAssetIds();
     }
 
     List<AssetEntity> result = List.of(_all);
 
-    // Combined album filter: each album produces a predicate.
-    // in(A)  → asset IS in album A
-    // not(B) → asset is NOT in album B
-    // R combines all: AND = all must hold, OR = any must hold.
     final allIds = {...f.includeAlbumIds, ...f.excludeAlbumIds};
     if (allIds.isNotEmpty) {
       result = result.where((asset) {
@@ -149,6 +144,7 @@ class DeviceImageProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Call after any album membership change so the filter re-runs with fresh data.
   void invalidateFilterCache() {
     _albumCache.clear();
     _favoriteAssetIds = {};

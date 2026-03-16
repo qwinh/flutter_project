@@ -32,13 +32,7 @@ class _TagsViewState extends State<TagsView> {
   final _addDescCtrl = TextEditingController();
   String? _addNameError;
 
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<TagProvider>().load();
-    });
-  }
+  // NOTE: TagProvider is loaded eagerly in _AppRoot. No load() call needed here.
 
   @override
   void dispose() {
@@ -113,7 +107,6 @@ class _TagsViewState extends State<TagsView> {
       ),
       body: Column(
         children: [
-          // Search bar
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
             child: SearchBar(
@@ -124,7 +117,6 @@ class _TagsViewState extends State<TagsView> {
             ),
           ),
 
-          // Inline add form
           if (_showAddForm) _AddTagForm(
             nameCtrl: _addNameCtrl,
             descCtrl: _addDescCtrl,
@@ -132,7 +124,6 @@ class _TagsViewState extends State<TagsView> {
             onAdd: _addTag,
           ),
 
-          // Tag list
           Expanded(
             child: tags.isEmpty
                 ? const Center(child: Text('No tags yet.'))
@@ -160,8 +151,7 @@ class _TagsViewState extends State<TagsView> {
                                 final ok = await confirmDialog(
                                   context,
                                   title: 'Delete Tag',
-                                  message:
-                                      'Delete tag "${tag.name}"?',
+                                  message: 'Delete tag "${tag.name}"?',
                                 );
                                 if (ok) {
                                   await context
@@ -206,7 +196,6 @@ class _TagTile extends StatelessWidget {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Usage count badge
           Container(
             padding:
                 const EdgeInsets.symmetric(horizontal: 8, vertical: 2),

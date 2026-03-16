@@ -69,12 +69,4 @@ class TagModel {
       );
 }
 
-/// Represents a device image (from photo_manager) stored/linked in the DB.
-/// The [assetId] is the AssetEntity.id from photo_manager.
-class ImageRecord {
-  final String assetId;
-  // We keep a local path for display when asset is available.
-  // The assetId is the primary key stored in SQLite.
 
-  const ImageRecord({required this.assetId});
-}

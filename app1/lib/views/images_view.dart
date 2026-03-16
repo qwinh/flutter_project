@@ -2,14 +2,13 @@
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'package:photo_manager/photo_manager.dart' as ip;
+import 'package:photo_manager/photo_manager.dart' as pm;
 import 'package:provider/provider.dart';
 
-import '../models/models.dart';
 import '../providers/album_provider.dart';
 import '../providers/image_provider.dart' as ip;
+import '../providers/notifiers.dart';
 import '../providers/selection_provider.dart';
-import '../router/app_router.dart';
 import '../widgets/widgets.dart';
 import '../widgets/drag_select_grid.dart';
 
@@ -53,7 +52,7 @@ class _ImagesViewState extends State<ImagesView> {
 
   void _exitSelectionMode() => setState(() => _selectionMode = false);
 
-  List<ip.AssetEntity> _visible(ip.DeviceImageProvider p) => _hiddenIds.isEmpty
+  List<pm.AssetEntity> _visible(ip.DeviceImageProvider p) => _hiddenIds.isEmpty
       ? p.filtered
       : p.filtered.where((a) => !_hiddenIds.contains(a.id)).toList();
 
@@ -64,7 +63,7 @@ class _ImagesViewState extends State<ImagesView> {
 
   void _unhideAll() => setState(() => _hiddenIds = {});
 
-  void _onDragStart(int i, List<ip.AssetEntity> vis) {
+  void _onDragStart(int i, List<pm.AssetEntity> vis) {
     final sel = context.read<SelectionProvider>();
     _dragDeselectMode = sel.isSelected(vis[i].id);
     _preDragSelection = sel.assetIds.toSet();
@@ -72,7 +71,7 @@ class _ImagesViewState extends State<ImagesView> {
     if (!_dragDeselectMode) sel.select(vis[i].id);
   }
 
-  void _onDragUpdate(int s, int e, List<ip.AssetEntity> vis) {
+  void _onDragUpdate(int s, int e, List<pm.AssetEntity> vis) {
     final sel = context.read<SelectionProvider>();
     final sweep = {for (int i = s; i <= e; i++) if (i < vis.length) vis[i].id};
     sel.setSelection(_dragDeselectMode
@@ -85,7 +84,7 @@ class _ImagesViewState extends State<ImagesView> {
     _dragDeselectMode = false;
   }
 
-  void _onTap(int i, List<ip.AssetEntity> vis) {
+  void _onTap(int i, List<pm.AssetEntity> vis) {
     final sel = context.read<SelectionProvider>();
     if (_selectionMode) {
       sel.toggle(vis[i].id).then((_) { if (sel.count == 0) _exitSelectionMode(); });
@@ -112,7 +111,6 @@ class _ImagesViewState extends State<ImagesView> {
     final sel = context.watch<SelectionProvider>();
     final vis = _visible(imgProv);
     final hiding = _hiddenIds.isNotEmpty;
-    context.read<SelectionCountNotifier>().update(sel.count);
 
     return Scaffold(
       appBar: AppBar(
@@ -277,7 +275,6 @@ class _FilterSheetState extends State<_FilterSheet> {
               children: [
 
                 if (albums.isNotEmpty) ...[
-                  // Albums header
                   Row(children: [
                     Text('Albums', style: theme.textTheme.labelMedium?.copyWith(color: cs.onSurfaceVariant)),
                     const SizedBox(width: 6),
@@ -436,10 +433,4 @@ class _PermissionPrompt extends StatelessWidget {
       ]),
     ),
   );
-}
-
-class FilteredListNotifier extends ChangeNotifier {
-  List<dynamic> _list = [];
-  List<dynamic> get list => _list;
-  void setList(List<dynamic> list) { _list = list; notifyListeners(); }
 }

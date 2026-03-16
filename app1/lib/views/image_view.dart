@@ -10,8 +10,8 @@ import 'package:photo_manager/photo_manager.dart';
 import 'package:photo_manager_image_provider/photo_manager_image_provider.dart';
 import 'package:provider/provider.dart';
 
+import '../providers/notifiers.dart';
 import '../providers/selection_provider.dart';
-import '../views/images_view.dart';
 
 class ImageView extends StatefulWidget {
   final int initialIndex;

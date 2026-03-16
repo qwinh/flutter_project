@@ -47,7 +47,7 @@ class AlbumProvider extends ChangeNotifier {
     }
     _albums = [..._albums, saved]..sort((a, b) => a.name.compareTo(b.name));
     _albumTagIds[saved.id!] = tagIds;
-    _albumAssetIds[saved.id!] = assetIds;
+    _albumAssetIds[saved.id!] = List.of(assetIds);
     notifyListeners();
     return saved;
   }
@@ -94,13 +94,28 @@ class AlbumProvider extends ChangeNotifier {
 
   Future<void> addImagesToAlbum(int albumId, List<String> assetIds) async {
     await _db.addImagesToAlbum(albumId, assetIds);
-    _albumAssetIds.remove(albumId); // invalidate cache
+    // Re-fetch so the cache is warm before listeners rebuild.
+    _albumAssetIds[albumId] = await _db.getAssetIdsForAlbum(albumId);
     notifyListeners();
   }
 
   Future<void> removeImageFromAlbum(int albumId, String assetId) async {
     await _db.removeImageFromAlbum(albumId, assetId);
     _albumAssetIds[albumId]?.remove(assetId);
+    notifyListeners();
+  }
+
+  /// Removes multiple images from an album in one DB transaction.
+  Future<void> removeImagesFromAlbum(
+      int albumId, List<String> assetIds) async {
+    if (assetIds.isEmpty) return;
+    await _db.removeImagesFromAlbum(albumId, assetIds);
+    final cached = _albumAssetIds[albumId];
+    if (cached != null) {
+      final removeSet = assetIds.toSet();
+      _albumAssetIds[albumId] =
+          cached.where((id) => !removeSet.contains(id)).toList();
+    }
     notifyListeners();
   }
 

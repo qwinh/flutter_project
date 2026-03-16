@@ -28,19 +28,12 @@ class _AlbumsViewState extends State<AlbumsView> {
   bool _selectionMode = false;
   bool _favOnly = false;
 
-  // Tag filter: included tags (AND/OR), excluded tags (NOT), mode toggle.
   Set<int> _tagFilter = {};
   Set<int> _tagExclude = {};
   bool _tagFilterAnd = true;
 
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<AlbumProvider>().load();
-      context.read<TagProvider>().load();
-    });
-  }
+  // NOTE: AlbumProvider and TagProvider are loaded eagerly in _AppRoot.
+  // No load() call needed here — just watch.
 
   @override
   void dispose() {
@@ -50,17 +43,11 @@ class _AlbumsViewState extends State<AlbumsView> {
 
   List<AlbumModel> _applyFilters(List<AlbumModel> albums, AlbumProvider ap) {
     return albums.where((a) {
-      // Name search
       if (_searchQuery.isNotEmpty &&
           !a.name.toLowerCase().contains(_searchQuery.toLowerCase())) {
         return false;
       }
-      // Favorites-only toggle
       if (_favOnly && !a.isFavorite) return false;
-      // Unified R(f(a), f(b), ...) tag filter.
-      // include(x) => album HAS tag x
-      // exclude(x) => album does NOT have tag x
-      // R = _tagFilterAnd (ALL) or OR (ANY)
       final allTagIds = {..._tagFilter, ..._tagExclude};
       if (allTagIds.isNotEmpty) {
         final albumTagIds = ap.getTagIdsSync(a.id!).toSet();
@@ -98,13 +85,16 @@ class _AlbumsViewState extends State<AlbumsView> {
       message: 'Delete ${_selectedIds.length} album(s)?',
     );
     if (!confirmed) return;
+
+    // Capture count before clearing selection.
+    final deletedCount = _selectedIds.length;
     final ap = context.read<AlbumProvider>();
     for (final id in List.of(_selectedIds)) {
       await ap.deleteAlbum(id);
     }
     _exitSelectionMode();
-    await NotificationService.instance.show(
-        'Albums deleted', '${_selectedIds.length} album(s) removed.');
+    await NotificationService.instance
+        .show('Albums deleted', '$deletedCount album(s) removed.');
   }
 
   Future<void> _bulkToggleFavorite() async {
@@ -147,7 +137,6 @@ class _AlbumsViewState extends State<AlbumsView> {
                 ),
               ]
             : [
-                // Favorites toggle
                 IconButton(
                   icon: Icon(
                     _favOnly ? Icons.favorite : Icons.favorite_border,
@@ -165,7 +154,6 @@ class _AlbumsViewState extends State<AlbumsView> {
       ),
       body: Column(
         children: [
-          // Search bar
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
             child: SearchBar(
@@ -175,7 +163,6 @@ class _AlbumsViewState extends State<AlbumsView> {
               onChanged: (v) => setState(() => _searchQuery = v),
             ),
           ),
-          // Tag filter chips
           if (tp.tags.isNotEmpty)
             _TagFilterBar(
               tags: tp.tags,
@@ -186,7 +173,6 @@ class _AlbumsViewState extends State<AlbumsView> {
               onExcludedChanged: (s) => setState(() => _tagExclude = s),
               onModeChanged: (v) => setState(() => _tagFilterAnd = v),
             ),
-          // Album list
           Expanded(
             child: ap.loading
                 ? const Center(child: CircularProgressIndicator())
@@ -225,8 +211,7 @@ class _AlbumsViewState extends State<AlbumsView> {
                               final ok = await confirmDialog(
                                 context,
                                 title: 'Delete Album',
-                                message:
-                                    'Delete "${album.name}"?',
+                                message: 'Delete "${album.name}"?',
                               );
                               if (ok) {
                                 await context

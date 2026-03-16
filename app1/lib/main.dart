@@ -7,11 +7,11 @@ import 'package:provider/provider.dart';
 
 import 'providers/album_provider.dart';
 import 'providers/image_provider.dart';
+import 'providers/notifiers.dart';
 import 'providers/selection_provider.dart';
 import 'providers/tag_provider.dart';
 import 'router/app_router.dart';
 import 'services/notification_service.dart';
-import 'views/images_view.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -30,15 +30,22 @@ class PhotoVaultApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => TagProvider()),
         ChangeNotifierProvider(create: (_) => DeviceImageProvider()),
         ChangeNotifierProvider(create: (_) => SelectionProvider()),
-        ChangeNotifierProvider(create: (_) => SelectionCountNotifier()),
+        // SelectionCountNotifier stays in sync automatically via
+        // ChangeNotifierProxyProvider — no manual addListener needed.
+        ChangeNotifierProxyProvider<SelectionProvider, SelectionCountNotifier>(
+          create: (_) => SelectionCountNotifier(),
+          update: (_, sel, notifier) => notifier!..update(sel.count),
+        ),
         ChangeNotifierProvider(create: (_) => FilteredListNotifier()),
       ],
-      child: _AppRoot(),
+      child: const _AppRoot(),
     );
   }
 }
 
 class _AppRoot extends StatefulWidget {
+  const _AppRoot();
+
   @override
   State<_AppRoot> createState() => _AppRootState();
 }
@@ -53,10 +60,6 @@ class _AppRootState extends State<_AppRoot> {
       context.read<TagProvider>().load();
       // Load persisted selection.
       context.read<SelectionProvider>().load();
-      // Keep SelectionCountNotifier in sync with SelectionProvider.
-      final selProv = context.read<SelectionProvider>();
-      final countNotifier = context.read<SelectionCountNotifier>();
-      selProv.addListener(() => countNotifier.update(selProv.count));
     });
   }
 
