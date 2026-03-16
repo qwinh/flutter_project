@@ -34,11 +34,18 @@ class _AlbumAddViewState extends State<AlbumAddView> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      // Mirror the current selection pool as preview
-      final sp = context.read<SelectionProvider>();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _syncFromSelection());
+  }
+
+  /// Resolves AssetEntity objects from the selection pool and mirrors them
+  /// into [_previewEntities]. Safe to call multiple times (e.g. on return
+  /// from the "Add more" images screen).
+  Future<void> _syncFromSelection() async {
+    final sp = context.read<SelectionProvider>();
+    await sp.resolveEntities();
+    if (mounted) {
       setState(() => _previewEntities = List.of(sp.entities));
-    });
+    }
   }
 
   @override
@@ -181,7 +188,7 @@ class _AlbumAddViewState extends State<AlbumAddView> {
                   // Navigate to images view; user selects more there.
                   // The selection pool persists so they come back with
                   // updated pool.
-                  context.push('/images');
+                  context.push('/images').then((_) => _syncFromSelection());
                 },
                 icon: const Icon(Icons.add_photo_alternate_outlined),
                 label: const Text('Add more'),
