@@ -141,3 +141,133 @@ class _TagPickerDialogState extends State<TagPickerDialog> {
     );
   }
 }
+
+// ── Shared filter list widgets ────────────────────────────────────────────────
+
+/// Scrollable constrained list with a visible scrollbar track.
+class FilterScrollList extends StatefulWidget {
+  final int itemCount;
+  final double maxHeight;
+  final IndexedWidgetBuilder itemBuilder;
+  const FilterScrollList({
+    super.key,
+    required this.itemCount,
+    required this.maxHeight,
+    required this.itemBuilder,
+  });
+  @override
+  State<FilterScrollList> createState() => _FilterScrollListState();
+}
+
+class _FilterScrollListState extends State<FilterScrollList> {
+  final _ctrl = ScrollController();
+  @override
+  void dispose() { _ctrl.dispose(); super.dispose(); }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxHeight: widget.maxHeight),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: Material(
+          color: cs.surfaceContainerHighest.withOpacity(0.45),
+          child: RawScrollbar(
+            controller: _ctrl,
+            thumbVisibility: true,
+            trackVisibility: true,
+            thickness: 6,
+            minThumbLength: 40,
+            radius: const Radius.circular(3),
+            thumbColor: cs.onSurfaceVariant.withOpacity(0.35),
+            trackColor: cs.surfaceContainerHighest.withOpacity(0.2),
+            child: ListView.separated(
+              controller: _ctrl,
+              padding: const EdgeInsets.fromLTRB(0, 4, 14, 4),
+              itemCount: widget.itemCount,
+              separatorBuilder: (_, __) => Divider(
+                height: 1, indent: 14, endIndent: 0,
+                color: cs.outlineVariant.withOpacity(0.3),
+              ),
+              itemBuilder: widget.itemBuilder,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class FilterListRow extends StatelessWidget {
+  final String label;
+  final bool included;
+  final bool excluded;
+  final VoidCallback onTap;
+  final VoidCallback onLongPress;
+  const FilterListRow({
+    super.key,
+    required this.label,
+    required this.included,
+    required this.excluded,
+    required this.onTap,
+    required this.onLongPress,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      onLongPress: onLongPress,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        child: Row(children: [
+          Expanded(child: Text(label,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              color: included ? cs.primary : excluded ? cs.error : null,
+              fontWeight: (included || excluded) ? FontWeight.w500 : null,
+            ))),
+          if (included)
+            Icon(Icons.check_circle_rounded, size: 16, color: cs.primary)
+          else if (excluded)
+            Icon(Icons.remove_circle_rounded, size: 16, color: cs.error)
+          else
+            const SizedBox(width: 16),
+        ]),
+      ),
+    );
+  }
+}
+
+class FilterPill extends StatelessWidget {
+  final String label;
+  final Color color;
+  final Color textColor;
+  final VoidCallback onTap;
+  final bool bold;
+  const FilterPill({
+    super.key,
+    required this.label,
+    required this.color,
+    required this.textColor,
+    required this.onTap,
+    this.bold = false,
+  });
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+    onTap: onTap,
+    child: AnimatedContainer(
+      duration: const Duration(milliseconds: 150),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(6)),
+      child: Text(label, style: Theme.of(context).textTheme.labelSmall?.copyWith(
+        color: textColor,
+        fontWeight: bold ? FontWeight.w700 : FontWeight.w600,
+        letterSpacing: 0.4,
+      )),
+    ),
+  );
+}

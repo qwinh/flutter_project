@@ -1,9 +1,7 @@
 // lib/providers/image_provider.dart
-// Loads all device images via photo_manager, applies in-memory filters/sort.
 
 import 'package:flutter/foundation.dart';
 import 'package:photo_manager/photo_manager.dart';
-
 import '../db/database_helper.dart';
 
 enum SortOrder { dateDesc, dateAsc, nameAsc, nameDesc }
@@ -11,6 +9,10 @@ enum SortOrder { dateDesc, dateAsc, nameAsc, nameDesc }
 class ImageFilterState {
   final Set<int> includeAlbumIds;
   final Set<int> excludeAlbumIds;
+  // Applies to the combined include+exclude set:
+  // true  (ALL) = in(A) AND not_in(B) AND ...
+  // false (ANY) = in(A) OR  not_in(B) OR  ...
+  final bool albumFilterAnd;
   final bool onlyFavoriteAlbums;
   final int? minWidth;
   final int? minHeight;
@@ -19,6 +21,7 @@ class ImageFilterState {
   const ImageFilterState({
     this.includeAlbumIds = const {},
     this.excludeAlbumIds = const {},
+    this.albumFilterAnd = false,
     this.onlyFavoriteAlbums = false,
     this.minWidth,
     this.minHeight,
@@ -26,30 +29,27 @@ class ImageFilterState {
   });
 
   bool get hasAlbumFilter =>
-      includeAlbumIds.isNotEmpty ||
-      excludeAlbumIds.isNotEmpty ||
-      onlyFavoriteAlbums;
+      includeAlbumIds.isNotEmpty || excludeAlbumIds.isNotEmpty || onlyFavoriteAlbums;
 
-  bool get hasAnyFilter =>
-      hasAlbumFilter || minWidth != null || minHeight != null;
+  bool get hasAnyFilter => hasAlbumFilter || minWidth != null || minHeight != null;
 
   ImageFilterState copyWith({
     Set<int>? includeAlbumIds,
     Set<int>? excludeAlbumIds,
+    bool? albumFilterAnd,
     bool? onlyFavoriteAlbums,
     Object? minWidth = _sentinel,
     Object? minHeight = _sentinel,
     SortOrder? sortOrder,
-  }) {
-    return ImageFilterState(
-      includeAlbumIds: includeAlbumIds ?? this.includeAlbumIds,
-      excludeAlbumIds: excludeAlbumIds ?? this.excludeAlbumIds,
-      onlyFavoriteAlbums: onlyFavoriteAlbums ?? this.onlyFavoriteAlbums,
-      minWidth: minWidth == _sentinel ? this.minWidth : minWidth as int?,
-      minHeight: minHeight == _sentinel ? this.minHeight : minHeight as int?,
-      sortOrder: sortOrder ?? this.sortOrder,
-    );
-  }
+  }) => ImageFilterState(
+    includeAlbumIds: includeAlbumIds ?? this.includeAlbumIds,
+    excludeAlbumIds: excludeAlbumIds ?? this.excludeAlbumIds,
+    albumFilterAnd: albumFilterAnd ?? this.albumFilterAnd,
+    onlyFavoriteAlbums: onlyFavoriteAlbums ?? this.onlyFavoriteAlbums,
+    minWidth: minWidth == _sentinel ? this.minWidth : minWidth as int?,
+    minHeight: minHeight == _sentinel ? this.minHeight : minHeight as int?,
+    sortOrder: sortOrder ?? this.sortOrder,
+  );
 }
 
 const _sentinel = Object();
@@ -71,8 +71,7 @@ class DeviceImageProvider extends ChangeNotifier {
   bool _permissionGranted = false;
   bool get permissionGranted => _permissionGranted;
 
-  Set<String> _includeAssetIds = {};
-  Set<String> _excludeAssetIds = {};
+  final Map<int, Set<String>> _albumCache = {};
   Set<String> _favoriteAssetIds = {};
 
   Future<void> requestPermissionAndLoad() async {
@@ -89,21 +88,10 @@ class DeviceImageProvider extends ChangeNotifier {
   Future<void> loadAll() async {
     _loading = true;
     notifyListeners();
-
-    final albums = await PhotoManager.getAssetPathList(
-      type: RequestType.image,
-      onlyAll: true,
-    );
-
-    if (albums.isNotEmpty) {
-      _all = await albums.first.getAssetListRange(
-        start: 0,
-        end: await albums.first.assetCountAsync,
-      );
-    } else {
-      _all = [];
-    }
-
+    final albums = await PhotoManager.getAssetPathList(type: RequestType.image, onlyAll: true);
+    _all = albums.isNotEmpty
+        ? await albums.first.getAssetListRange(start: 0, end: await albums.first.assetCountAsync)
+        : [];
     _loading = false;
     await _applyFilters();
   }
@@ -113,24 +101,15 @@ class DeviceImageProvider extends ChangeNotifier {
     await _applyFilters();
   }
 
-  Future<void> refreshForAlbumFilter(Set<int> albumIds) async {
-    _includeAssetIds = await _db.getAssetIdsForAlbums(albumIds);
-    await _applyFilters();
-  }
-
-  Future<void> refreshFavoriteFilter() async {
-    _favoriteAssetIds = await _db.getFavoriteAlbumAssetIds();
-    await _applyFilters();
-  }
+  Future<Set<String>> _cacheAlbum(int id) async =>
+      _albumCache[id] ??= await _db.getAssetIdsForAlbums({id});
 
   Future<void> _applyFilters() async {
     final f = _filterState;
 
-    if (f.includeAlbumIds.isNotEmpty) {
-      _includeAssetIds = await _db.getAssetIdsForAlbums(f.includeAlbumIds);
-    }
-    if (f.excludeAlbumIds.isNotEmpty) {
-      _excludeAssetIds = await _db.getAssetIdsForAlbums(f.excludeAlbumIds);
+    // Pre-fetch album asset sets.
+    for (final id in {...f.includeAlbumIds, ...f.excludeAlbumIds}) {
+      await _cacheAlbum(id);
     }
     if (f.onlyFavoriteAlbums) {
       _favoriteAssetIds = await _db.getFavoriteAlbumAssetIds();
@@ -138,35 +117,32 @@ class DeviceImageProvider extends ChangeNotifier {
 
     List<AssetEntity> result = List.of(_all);
 
-    if (f.includeAlbumIds.isNotEmpty) {
-      result = result.where((a) => _includeAssetIds.contains(a.id)).toList();
+    // Combined album filter: each album produces a predicate.
+    // in(A)  → asset IS in album A
+    // not(B) → asset is NOT in album B
+    // R combines all: AND = all must hold, OR = any must hold.
+    final allIds = {...f.includeAlbumIds, ...f.excludeAlbumIds};
+    if (allIds.isNotEmpty) {
+      result = result.where((asset) {
+        final preds = allIds.map((id) {
+          final inAlbum = _albumCache[id]?.contains(asset.id) ?? false;
+          return f.includeAlbumIds.contains(id) ? inAlbum : !inAlbum;
+        });
+        return f.albumFilterAnd ? preds.every((p) => p) : preds.any((p) => p);
+      }).toList();
     }
-    if (f.excludeAlbumIds.isNotEmpty) {
-      result = result.where((a) => !_excludeAssetIds.contains(a.id)).toList();
-    }
+
     if (f.onlyFavoriteAlbums) {
       result = result.where((a) => _favoriteAssetIds.contains(a.id)).toList();
     }
-    if (f.minWidth != null) {
-      result = result.where((a) => a.width >= f.minWidth!).toList();
-    }
-    if (f.minHeight != null) {
-      result = result.where((a) => a.height >= f.minHeight!).toList();
-    }
+    if (f.minWidth != null) result = result.where((a) => a.width >= f.minWidth!).toList();
+    if (f.minHeight != null) result = result.where((a) => a.height >= f.minHeight!).toList();
 
     switch (f.sortOrder) {
-      case SortOrder.dateDesc:
-        result.sort((a, b) => b.createDateTime.compareTo(a.createDateTime));
-        break;
-      case SortOrder.dateAsc:
-        result.sort((a, b) => a.createDateTime.compareTo(b.createDateTime));
-        break;
-      case SortOrder.nameAsc:
-        result.sort((a, b) => (a.title ?? '').compareTo(b.title ?? ''));
-        break;
-      case SortOrder.nameDesc:
-        result.sort((a, b) => (b.title ?? '').compareTo(a.title ?? ''));
-        break;
+      case SortOrder.dateDesc: result.sort((a, b) => b.createDateTime.compareTo(a.createDateTime));
+      case SortOrder.dateAsc:  result.sort((a, b) => a.createDateTime.compareTo(b.createDateTime));
+      case SortOrder.nameAsc:  result.sort((a, b) => (a.title ?? '').compareTo(b.title ?? ''));
+      case SortOrder.nameDesc: result.sort((a, b) => (b.title ?? '').compareTo(a.title ?? ''));
     }
 
     _filtered = result;
@@ -174,8 +150,7 @@ class DeviceImageProvider extends ChangeNotifier {
   }
 
   void invalidateFilterCache() {
-    _includeAssetIds = {};
-    _excludeAssetIds = {};
+    _albumCache.clear();
     _favoriteAssetIds = {};
   }
 }

@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import 'package:photo_manager/photo_manager.dart' as ip;
 import 'package:provider/provider.dart';
 
+import '../models/models.dart';
 import '../providers/album_provider.dart';
 import '../providers/image_provider.dart' as ip;
 import '../providers/selection_provider.dart';
@@ -14,7 +15,6 @@ import '../widgets/drag_select_grid.dart';
 
 class ImagesView extends StatefulWidget {
   const ImagesView({super.key});
-
   @override
   State<ImagesView> createState() => _ImagesViewState();
 }
@@ -22,34 +22,25 @@ class ImagesView extends StatefulWidget {
 class _ImagesViewState extends State<ImagesView> {
   bool _selectionMode = false;
   late final AppLifecycleListener _lifecycleListener;
-
   final _scrollController = ScrollController();
-
   bool _dragDeselectMode = false;
   Set<String> _preDragSelection = {};
-
-  // ── Local hide-selected state ─────────────────────────────────────────────
-  // Accumulated set of IDs hidden by pressing the hide button.
-  // Tap: union current selection into this set.
-  // Double-tap: clear this set (unhide all).
-  // Lives only in this widget — nothing is stored or persisted.
   Set<String> _hiddenIds = {};
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<ip.DeviceImageProvider>().requestPermissionAndLoad();
-    });
+    WidgetsBinding.instance.addPostFrameCallback((_) =>
+        context.read<ip.DeviceImageProvider>().requestPermissionAndLoad());
     _lifecycleListener = AppLifecycleListener(onResume: _onAppResumed);
   }
 
   void _onAppResumed() {
-    final imgProv = context.read<ip.DeviceImageProvider>();
-    if (!imgProv.permissionGranted) {
-      imgProv.requestPermissionAndLoad();
-    } else if (imgProv.all.isEmpty) {
-      imgProv.loadAll();
+    final p = context.read<ip.DeviceImageProvider>();
+    if (!p.permissionGranted) {
+      p.requestPermissionAndLoad();
+    } else if (p.all.isEmpty) {
+      p.loadAll();
     }
   }
 
@@ -60,89 +51,57 @@ class _ImagesViewState extends State<ImagesView> {
     super.dispose();
   }
 
-  void _enterSelectionMode() => setState(() => _selectionMode = true);
   void _exitSelectionMode() => setState(() => _selectionMode = false);
 
-  // ── Hide button logic ─────────────────────────────────────────────────────
+  List<ip.AssetEntity> _visible(ip.DeviceImageProvider p) => _hiddenIds.isEmpty
+      ? p.filtered
+      : p.filtered.where((a) => !_hiddenIds.contains(a.id)).toList();
 
-  /// Single tap: snapshot current selection into hidden set (additive).
-  void _hideSelected(SelectionProvider selProv) {
-    if (selProv.count == 0) return;
-    setState(() {
-      _hiddenIds = {..._hiddenIds, ...selProv.assetIds};
-    });
+  void _hideSelected(SelectionProvider sel) {
+    if (sel.count == 0) return;
+    setState(() => _hiddenIds = {..._hiddenIds, ...sel.assetIds});
   }
 
-  /// Double-tap: clear all hidden IDs, everything reappears.
-  void _unhideAll() {
-    setState(() => _hiddenIds = {});
-  }
+  void _unhideAll() => setState(() => _hiddenIds = {});
 
-  // ── Visible assets (provider filtered list minus locally hidden) ──────────
-
-  List<ip.AssetEntity> _visibleAssets(ip.DeviceImageProvider imgProv) {
-    if (_hiddenIds.isEmpty) return imgProv.filtered;
-    return imgProv.filtered
-        .where((a) => !_hiddenIds.contains(a.id))
-        .toList();
-  }
-
-  // ── DragSelectGrid callbacks ───────────────────────────────────────────────
-
-  void _onDragSelectionStart(int startIndex, List<ip.AssetEntity> visible) {
-    final selProv = context.read<SelectionProvider>();
-    final id = visible[startIndex].id;
-
-    _dragDeselectMode = selProv.isSelected(id);
-    _preDragSelection = selProv.assetIds.toSet();
-
+  void _onDragStart(int i, List<ip.AssetEntity> vis) {
+    final sel = context.read<SelectionProvider>();
+    _dragDeselectMode = sel.isSelected(vis[i].id);
+    _preDragSelection = sel.assetIds.toSet();
     setState(() => _selectionMode = true);
-
-    if (!_dragDeselectMode) selProv.select(id);
+    if (!_dragDeselectMode) sel.select(vis[i].id);
   }
 
-  void _onDragSelectionUpdate(int startIndex, int endIndex, List<ip.AssetEntity> visible) {
-    final selProv = context.read<SelectionProvider>();
-
-    final sweepIds = <String>{};
-    for (int i = startIndex; i <= endIndex; i++) {
-      if (i < visible.length) sweepIds.add(visible[i].id);
-    }
-
-    final desired = _dragDeselectMode
-        ? _preDragSelection.difference(sweepIds)
-        : _preDragSelection.union(sweepIds);
-
-    selProv.setSelection(desired);
+  void _onDragUpdate(int s, int e, List<ip.AssetEntity> vis) {
+    final sel = context.read<SelectionProvider>();
+    final sweep = {for (int i = s; i <= e; i++) if (i < vis.length) vis[i].id};
+    sel.setSelection(_dragDeselectMode
+        ? _preDragSelection.difference(sweep)
+        : _preDragSelection.union(sweep));
   }
 
-  void _onDragSelectionEnd() {
+  void _onDragEnd() {
     _preDragSelection = {};
     _dragDeselectMode = false;
   }
 
-  void _onItemTap(int index, List<ip.AssetEntity> visible) {
-    final selProv = context.read<SelectionProvider>();
+  void _onTap(int i, List<ip.AssetEntity> vis) {
+    final sel = context.read<SelectionProvider>();
     if (_selectionMode) {
-      selProv.toggle(visible[index].id).then((_) {
-        if (selProv.count == 0) _exitSelectionMode();
-      });
+      sel.toggle(vis[i].id).then((_) { if (sel.count == 0) _exitSelectionMode(); });
     } else {
-      context.read<FilteredListNotifier>().setList(visible);
-      context.push('/images/view/$index');
+      context.read<FilteredListNotifier>().setList(vis);
+      context.push('/images/view/$i');
     }
   }
 
-  void _showFilterSheet(BuildContext context, ip.DeviceImageProvider imgProv) {
+  void _showFilterSheet(ip.DeviceImageProvider p) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       builder: (_) => _FilterSheet(
-        current: imgProv.filterState,
-        onApply: (state) {
-          imgProv.setFilter(state);
-          Navigator.pop(context);
-        },
+        current: p.filterState,
+        onApply: (s) { p.setFilter(s); Navigator.pop(context); },
       ),
     );
   }
@@ -150,103 +109,52 @@ class _ImagesViewState extends State<ImagesView> {
   @override
   Widget build(BuildContext context) {
     final imgProv = context.watch<ip.DeviceImageProvider>();
-    final selProv = context.watch<SelectionProvider>();
-    final selCount = selProv.count;
-    final filterState = imgProv.filterState;
-    final visible = _visibleAssets(imgProv);
-    final hidingAny = _hiddenIds.isNotEmpty;
-
-    context.read<SelectionCountNotifier>().update(selCount);
+    final sel = context.watch<SelectionProvider>();
+    final vis = _visible(imgProv);
+    final hiding = _hiddenIds.isNotEmpty;
+    context.read<SelectionCountNotifier>().update(sel.count);
 
     return Scaffold(
       appBar: AppBar(
-        title: _selectionMode
-            ? Text('$selCount selected')
-            : const Text('Photos'),
+        title: _selectionMode ? Text('${sel.count} selected') : const Text('Photos'),
         actions: [
           if (_selectionMode) ...[
-            IconButton(
-              icon: const Icon(Icons.deselect),
-              tooltip: 'Deselect all',
-              onPressed: selCount > 0
-                  ? () {
-                      selProv.clearAll();
-                      _exitSelectionMode();
-                    }
-                  : null,
-            ),
-            IconButton(
-              icon: const Icon(Icons.select_all),
-              tooltip: 'Select all visible',
-              onPressed: () {
-                final allIds = visible.map((a) => a.id).toSet();
-                selProv.addMultiple(allIds);
-              },
-            ),
-            // Hide selected: single tap hides, double-tap unhides all.
-            if (selCount > 0)
+            IconButton(icon: const Icon(Icons.deselect), tooltip: 'Deselect all',
+              onPressed: sel.count > 0 ? () { sel.clearAll(); _exitSelectionMode(); } : null),
+            IconButton(icon: const Icon(Icons.select_all), tooltip: 'Select all visible',
+              onPressed: () => sel.addMultiple(vis.map((a) => a.id).toSet())),
+            if (sel.count > 0)
               GestureDetector(
-                onDoubleTap: _unhideAll,
+                onDoubleTap: hiding ? _unhideAll : null,
                 child: IconButton(
-                  icon: Icon(
-                    hidingAny ? Icons.visibility_off : Icons.visibility_off_outlined,
-                    color: hidingAny
-                        ? Theme.of(context).colorScheme.primary
-                        : null,
-                  ),
-                  tooltip: hidingAny
-                      ? 'Tap to hide more · Double-tap to show all'
-                      : 'Hide selected from view',
-                  onPressed: () => _hideSelected(selProv),
+                  icon: Icon(hiding ? Icons.visibility_off : Icons.visibility_off_outlined,
+                      color: hiding ? Theme.of(context).colorScheme.primary : null),
+                  tooltip: hiding ? 'Tap hide more · Double-tap show all' : 'Hide selected',
+                  onPressed: () => _hideSelected(sel),
                 ),
               ),
-            IconButton(
-              icon: const Icon(Icons.close),
-              tooltip: 'Exit selection',
-              onPressed: _exitSelectionMode,
-            ),
+            IconButton(icon: const Icon(Icons.close), onPressed: _exitSelectionMode),
           ] else ...[
-            // Hide button: visible whenever there's a selection or items are hidden.
-            // Tap hides current selection, double-tap unhides all.
-            if (selCount > 0 || hidingAny)
+            if (sel.count > 0 || hiding)
               GestureDetector(
-                onDoubleTap: hidingAny ? _unhideAll : null,
+                onDoubleTap: hiding ? _unhideAll : null,
                 child: IconButton(
-                  icon: Icon(
-                    hidingAny ? Icons.visibility_off : Icons.visibility_off_outlined,
-                    color: hidingAny
-                        ? Theme.of(context).colorScheme.primary
-                        : null,
-                  ),
-                  tooltip: hidingAny
-                      ? 'Tap to hide more · Double-tap to show all'
-                      : 'Hide selected from view',
-                  onPressed: selCount > 0 ? () => _hideSelected(selProv) : null,
+                  icon: Icon(hiding ? Icons.visibility_off : Icons.visibility_off_outlined,
+                      color: hiding ? Theme.of(context).colorScheme.primary : null),
+                  tooltip: hiding ? 'Tap hide more · Double-tap show all' : 'Hide selected',
+                  onPressed: sel.count > 0 ? () => _hideSelected(sel) : null,
                 ),
               ),
-            Stack(
-              clipBehavior: Clip.none,
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.filter_list),
-                  tooltip: 'Filters & Sort',
-                  onPressed: () => _showFilterSheet(context, imgProv),
-                ),
-                if (filterState.hasAnyFilter)
-                  Positioned(
-                    right: 6,
-                    top: 6,
-                    child: Container(
-                      width: 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.primary,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
+            Stack(clipBehavior: Clip.none, children: [
+              IconButton(icon: const Icon(Icons.filter_list), tooltip: 'Filters & Sort',
+                  onPressed: () => _showFilterSheet(imgProv)),
+              if (imgProv.filterState.hasAnyFilter)
+                Positioned(right: 6, top: 6, child: Container(
+                  width: 8, height: 8,
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.primary, shape: BoxShape.circle),
+                )),
+            ]),
           ],
         ],
       ),
@@ -255,329 +163,188 @@ class _ImagesViewState extends State<ImagesView> {
           : !imgProv.permissionGranted
               ? _PermissionPrompt(onRequest: imgProv.requestPermissionAndLoad)
               : RefreshIndicator(
-                  onRefresh: () =>
-                      context.read<ip.DeviceImageProvider>().loadAll(),
-                  child: visible.isEmpty
+                  onRefresh: () => context.read<ip.DeviceImageProvider>().loadAll(),
+                  child: vis.isEmpty
                       ? SingleChildScrollView(
                           physics: const AlwaysScrollableScrollPhysics(),
-                          child: SizedBox(
-                            height: 300,
-                            child: Center(
-                              child: Text(hidingAny
-                                  ? 'All photos are hidden.'
-                                  : 'No photos found.'),
-                            ),
-                          ),
-                        )
-                      : LayoutBuilder(
-                          builder: (ctx, constraints) {
-                            final gridWidth = constraints.maxWidth;
-                            final cols =
-                                (gridWidth / 120).floor().clamp(3, 6);
-                            final itemCount = visible.length;
-                            return DragSelectGrid(
-                              scrollController: _scrollController,
-                              crossAxisCount: cols,
-                              itemCount: itemCount,
-                              spacing: 2,
+                          child: SizedBox(height: 300, child: Center(
+                            child: Text(hiding ? 'All photos hidden.' : 'No photos found.'))))
+                      : LayoutBuilder(builder: (ctx, constraints) {
+                          final w = constraints.maxWidth;
+                          final cols = (w / 120).floor().clamp(3, 6);
+                          return DragSelectGrid(
+                            scrollController: _scrollController,
+                            crossAxisCount: cols, itemCount: vis.length,
+                            spacing: 2, padding: const EdgeInsets.all(2),
+                            isInSelectionMode: _selectionMode,
+                            onSelectionStart: (i) => _onDragStart(i, vis),
+                            onSelectionUpdate: (s, e) => _onDragUpdate(s, e, vis),
+                            onSelectionEnd: _onDragEnd,
+                            onItemTap: (i) => _onTap(i, vis),
+                            child: GridView.builder(
+                              controller: _scrollController,
+                              physics: const AlwaysScrollableScrollPhysics(),
                               padding: const EdgeInsets.all(2),
-                              isInSelectionMode: _selectionMode,
-                              onSelectionStart: (i) =>
-                                  _onDragSelectionStart(i, visible),
-                              onSelectionUpdate: (s, e) =>
-                                  _onDragSelectionUpdate(s, e, visible),
-                              onSelectionEnd: _onDragSelectionEnd,
-                              onItemTap: (i) => _onItemTap(i, visible),
-                              child: GridView.builder(
-                                controller: _scrollController,
-                                physics: const AlwaysScrollableScrollPhysics(),
-                                padding: const EdgeInsets.all(2),
-                                gridDelegate:
-                                    SliverGridDelegateWithFixedCrossAxisCount(
-                                  crossAxisCount: cols,
-                                  crossAxisSpacing: 2,
-                                  mainAxisSpacing: 2,
-                                ),
-                                itemCount: itemCount,
-                                itemBuilder: (ctx, i) {
-                                  final asset = visible[i];
-                                  return AssetThumb(
-                                    asset: asset,
-                                    selected: selProv.isSelected(asset.id),
-                                  );
-                                },
-                              ),
-                            );
-                          },
-                        ),
+                              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                                  crossAxisCount: cols, crossAxisSpacing: 2, mainAxisSpacing: 2),
+                              itemCount: vis.length,
+                              itemBuilder: (ctx, i) => AssetThumb(
+                                asset: vis[i], selected: sel.isSelected(vis[i].id)),
+                            ),
+                          );
+                        }),
                 ),
     );
   }
 }
 
-// ── Filter / sort bottom sheet ────────────────────────────────────────────────
+// ── Filter sheet ──────────────────────────────────────────────────────────────
 
 class _FilterSheet extends StatefulWidget {
   final ip.ImageFilterState current;
   final ValueChanged<ip.ImageFilterState> onApply;
-
   const _FilterSheet({required this.current, required this.onApply});
-
   @override
   State<_FilterSheet> createState() => _FilterSheetState();
 }
 
 class _FilterSheetState extends State<_FilterSheet> {
-  late ip.ImageFilterState _state;
-  final _minWCtrl = TextEditingController();
-  final _minHCtrl = TextEditingController();
+  late ip.ImageFilterState _s;
+  final _minW = TextEditingController();
+  final _minH = TextEditingController();
+  bool _sortActive = false;
 
   @override
   void initState() {
     super.initState();
-    _state = widget.current;
-    _minWCtrl.text = _state.minWidth?.toString() ?? '';
-    _minHCtrl.text = _state.minHeight?.toString() ?? '';
+    _s = widget.current;
+    _minW.text = _s.minWidth?.toString() ?? '';
+    _minH.text = _s.minHeight?.toString() ?? '';
   }
 
   @override
-  void dispose() {
-    _minWCtrl.dispose();
-    _minHCtrl.dispose();
-    super.dispose();
-  }
+  void dispose() { _minW.dispose(); _minH.dispose(); super.dispose(); }
 
-  // Tap → include. Tap again on included → clear. Double-tap → exclude.
-  // Double-tap on excluded → clear.
-  void _onAlbumTap(int albumId) {
-    final included = _state.includeAlbumIds.contains(albumId);
-    final excluded = _state.excludeAlbumIds.contains(albumId);
-    if (included) {
-      // clear
-      setState(() => _state = _state.copyWith(
-            includeAlbumIds: Set.from(_state.includeAlbumIds)..remove(albumId),
-          ));
-    } else if (excluded) {
-      // clear exclude too (in case tap after double-tap)
-      setState(() => _state = _state.copyWith(
-            excludeAlbumIds: Set.from(_state.excludeAlbumIds)..remove(albumId),
-          ));
+  void _tapAlbum(int id) {
+    if (_s.includeAlbumIds.contains(id)) {
+      setState(() => _s = _s.copyWith(includeAlbumIds: {..._s.includeAlbumIds}..remove(id)));
+    } else if (_s.excludeAlbumIds.contains(id)) {
+      setState(() => _s = _s.copyWith(excludeAlbumIds: {..._s.excludeAlbumIds}..remove(id)));
     } else {
-      // include
-      setState(() => _state = _state.copyWith(
-            includeAlbumIds: {..._state.includeAlbumIds, albumId},
-            excludeAlbumIds: Set.from(_state.excludeAlbumIds)..remove(albumId),
-          ));
+      setState(() => _s = _s.copyWith(
+        includeAlbumIds: {..._s.includeAlbumIds, id},
+        excludeAlbumIds: {..._s.excludeAlbumIds}..remove(id),
+      ));
     }
   }
 
-  void _onAlbumDoubleTap(int albumId) {
-    setState(() => _state = _state.copyWith(
-          excludeAlbumIds: {..._state.excludeAlbumIds, albumId},
-          includeAlbumIds: Set.from(_state.includeAlbumIds)..remove(albumId),
-        ));
-  }
+  void _holdAlbum(int id) => setState(() => _s = _s.copyWith(
+    excludeAlbumIds: {..._s.excludeAlbumIds, id},
+    includeAlbumIds: {..._s.includeAlbumIds}..remove(id),
+  ));
 
   @override
   Widget build(BuildContext context) {
     final albums = context.watch<AlbumProvider>().albums;
-    final sortedAlbums = [...albums]..sort((a, b) => a.name.compareTo(b.name));
+    final base = [...albums]..sort((a, b) => a.name.compareTo(b.name));
+    final sorted = _sortActive ? [
+      ...base.where((a) => _s.includeAlbumIds.contains(a.id) || _s.excludeAlbumIds.contains(a.id)),
+      ...base.where((a) => !_s.includeAlbumIds.contains(a.id) && !_s.excludeAlbumIds.contains(a.id)),
+    ] : base;
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
 
     return Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+      child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // ── Handle bar ──────────────────────────────────────────────────
-          Center(
-            child: Container(
-              margin: const EdgeInsets.symmetric(vertical: 10),
-              width: 36,
-              height: 4,
-              decoration: BoxDecoration(
-                color: cs.onSurfaceVariant.withOpacity(0.3),
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-          ),
-
+          Center(child: Container(
+            margin: const EdgeInsets.symmetric(vertical: 10),
+            width: 36, height: 4,
+            decoration: BoxDecoration(
+              color: cs.onSurfaceVariant.withOpacity(0.3), borderRadius: BorderRadius.circular(2)),
+          )),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              mainAxisSize: MainAxisSize.min,
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min,
               children: [
 
-                // ── Albums ────────────────────────────────────────────────
                 if (albums.isNotEmpty) ...[
-                  Row(
-                    children: [
-                      Text('Albums', style: theme.textTheme.labelMedium
-                          ?.copyWith(color: cs.onSurfaceVariant)),
-                      const Spacer(),
-                      Text('tap include · hold exclude',
-                          style: theme.textTheme.labelSmall
-                              ?.copyWith(color: cs.onSurfaceVariant.withOpacity(0.6))),
-                    ],
-                  ),
+                  // Albums header
+                  Row(children: [
+                    Text('Albums', style: theme.textTheme.labelMedium?.copyWith(color: cs.onSurfaceVariant)),
+                    const SizedBox(width: 6),
+                    FilterPill(label: _s.albumFilterAnd ? 'ALL' : 'ANY', color: cs.secondaryContainer,
+                        textColor: cs.onSecondaryContainer,
+                        onTap: () => setState(() => _s = _s.copyWith(albumFilterAnd: !_s.albumFilterAnd))),
+                    const SizedBox(width: 6),
+                    FilterPill(label: _sortActive ? '● A-Z' : 'A-Z',
+                        color: _sortActive ? cs.tertiaryContainer : cs.surfaceContainerHighest.withOpacity(0.5),
+                        textColor: _sortActive ? cs.onTertiaryContainer : cs.onSurfaceVariant,
+                        onTap: () => setState(() => _sortActive = !_sortActive)),
+                    const Spacer(),
+                    Text('tap · hold exclude', style: theme.textTheme.labelSmall
+                        ?.copyWith(color: cs.onSurfaceVariant.withOpacity(0.5))),
+                  ]),
                   const SizedBox(height: 6),
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxHeight: 220),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(10),
-                      child: Material(
-                        color: cs.surfaceContainerHighest.withOpacity(0.45),
-                        child: ListView.separated(
-                          padding: const EdgeInsets.symmetric(vertical: 4),
-                          shrinkWrap: true,
-                          itemCount: sortedAlbums.length,
-                          separatorBuilder: (_, __) => Divider(
-                            height: 1,
-                            indent: 16,
-                            endIndent: 16,
-                            color: cs.outlineVariant.withOpacity(0.3),
-                          ),
-                          itemBuilder: (_, i) {
-                            final a = sortedAlbums[i];
-                            final included = _state.includeAlbumIds.contains(a.id);
-                            final excluded = _state.excludeAlbumIds.contains(a.id);
-                            return GestureDetector(
-                              behavior: HitTestBehavior.opaque,
-                              onTap: () => _onAlbumTap(a.id!),
-                              onLongPress: () => _onAlbumDoubleTap(a.id!),
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 16, vertical: 10),
-                                child: Row(
-                                  children: [
-                                    Expanded(
-                                      child: Text(
-                                        a.name,
-                                        style: theme.textTheme.bodyMedium?.copyWith(
-                                          color: included
-                                              ? cs.primary
-                                              : excluded
-                                                  ? cs.error
-                                                  : null,
-                                          fontWeight: (included || excluded)
-                                              ? FontWeight.w500
-                                              : null,
-                                        ),
-                                      ),
-                                    ),
-                                    if (included)
-                                      Icon(Icons.check_circle_rounded,
-                                          size: 16, color: cs.primary)
-                                    else if (excluded)
-                                      Icon(Icons.remove_circle_rounded,
-                                          size: 16, color: cs.error)
-                                    else
-                                      const SizedBox(width: 16),
-                                  ],
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                    ),
+                  FilterScrollList(
+                    maxHeight: 220,
+                    itemBuilder: (ctx, i) {
+                      final a = sorted[i];
+                      final inc = _s.includeAlbumIds.contains(a.id);
+                      final exc = _s.excludeAlbumIds.contains(a.id);
+                      return FilterListRow(
+                        label: a.name, included: inc, excluded: exc,
+                        onTap: () => _tapAlbum(a.id!),
+                        onLongPress: () => _holdAlbum(a.id!),
+                      );
+                    },
+                    itemCount: sorted.length,
                   ),
                   const SizedBox(height: 12),
                 ],
 
-                // ── Favorite albums only ────────────────────────────────
-                _SubtleSwitch(
-                  label: 'Favorite albums only',
-                  value: _state.onlyFavoriteAlbums,
-                  onChanged: (v) => setState(
-                      () => _state = _state.copyWith(onlyFavoriteAlbums: v)),
-                ),
+                _SubtleSwitch(label: 'Favorite albums only', value: _s.onlyFavoriteAlbums,
+                    onChanged: (v) => setState(() => _s = _s.copyWith(onlyFavoriteAlbums: v))),
                 const SizedBox(height: 8),
 
-                // ── Min dimensions ──────────────────────────────────────
-                Row(
-                  children: [
-                    Expanded(
-                      child: _SubtleTextField(
-                        controller: _minWCtrl,
-                        label: 'Min W (px)',
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: _SubtleTextField(
-                        controller: _minHCtrl,
-                        label: 'Min H (px)',
-                      ),
-                    ),
-                  ],
-                ),
+                Row(children: [
+                  Expanded(child: _SubtleTextField(controller: _minW, label: 'Min W (px)')),
+                  const SizedBox(width: 10),
+                  Expanded(child: _SubtleTextField(controller: _minH, label: 'Min H (px)')),
+                ]),
                 const SizedBox(height: 12),
 
-                // ── Sort ────────────────────────────────────────────────
-                Text('Sort', style: theme.textTheme.labelMedium
-                    ?.copyWith(color: cs.onSurfaceVariant)),
+                Text('Sort', style: theme.textTheme.labelMedium?.copyWith(color: cs.onSurfaceVariant)),
                 const SizedBox(height: 6),
                 SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
-                  child: Row(
-                    spacing: 6,
-                    children: ip.SortOrder.values.map((s) {
-                      final active = _state.sortOrder == s;
-                      return GestureDetector(
-                        onTap: () => setState(
-                            () => _state = _state.copyWith(sortOrder: s)),
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 150),
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: active
-                                ? cs.primaryContainer
-                                : cs.surfaceContainerHighest.withOpacity(0.4),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Text(
-                            _sortLabel(s),
-                            style: theme.textTheme.labelMedium?.copyWith(
-                              color: active
-                                  ? cs.onPrimaryContainer
-                                  : cs.onSurfaceVariant,
-                              fontWeight: active ? FontWeight.w600 : null,
-                            ),
-                          ),
-                        ),
-                      );
-                    }).toList(),
-                  ),
+                  child: Row(spacing: 6, children: ip.SortOrder.values.map((s) {
+                    final active = _s.sortOrder == s;
+                    return FilterPill(
+                      label: _sortLabel(s),
+                      color: active ? cs.primaryContainer : cs.surfaceContainerHighest.withOpacity(0.4),
+                      textColor: active ? cs.onPrimaryContainer : cs.onSurfaceVariant,
+                      bold: active,
+                      onTap: () => setState(() => _s = _s.copyWith(sortOrder: s)),
+                    );
+                  }).toList()),
                 ),
                 const SizedBox(height: 16),
 
-                // ── Actions ─────────────────────────────────────────────
-                Row(
-                  children: [
-                    Expanded(
-                      child: FilledButton(
-                        onPressed: () {
-                          final w = int.tryParse(_minWCtrl.text);
-                          final h = int.tryParse(_minHCtrl.text);
-                          widget.onApply(
-                              _state.copyWith(minWidth: w, minHeight: h));
-                        },
-                        child: const Text('Apply'),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    TextButton(
-                      onPressed: () =>
-                          widget.onApply(const ip.ImageFilterState()),
-                      child: const Text('Reset'),
-                    ),
-                  ],
-                ),
+                Row(children: [
+                  Expanded(child: FilledButton(
+                    onPressed: () => widget.onApply(_s.copyWith(
+                        minWidth: int.tryParse(_minW.text),
+                        minHeight: int.tryParse(_minH.text))),
+                    child: const Text('Apply'),
+                  )),
+                  const SizedBox(width: 10),
+                  TextButton(
+                    onPressed: () => widget.onApply(const ip.ImageFilterState()),
+                    child: const Text('Reset'),
+                  ),
+                ]),
               ],
             ),
           ),
@@ -587,21 +354,18 @@ class _FilterSheetState extends State<_FilterSheet> {
   }
 
   String _sortLabel(ip.SortOrder s) => switch (s) {
-        ip.SortOrder.dateDesc => 'Newest',
-        ip.SortOrder.dateAsc => 'Oldest',
-        ip.SortOrder.nameAsc => 'A→Z',
-        ip.SortOrder.nameDesc => 'Z→A',
-      };
+    ip.SortOrder.dateDesc => 'Newest',
+    ip.SortOrder.dateAsc  => 'Oldest',
+    ip.SortOrder.nameAsc  => 'A→Z',
+    ip.SortOrder.nameDesc => 'Z→A',
+  };
 }
-
-// ── Subtle helper widgets ─────────────────────────────────────────────────────
 
 class _SubtleSwitch extends StatelessWidget {
   final String label;
   final bool value;
   final ValueChanged<bool> onChanged;
-  const _SubtleSwitch(
-      {required this.label, required this.value, required this.onChanged});
+  const _SubtleSwitch({required this.label, required this.value, required this.onChanged});
 
   @override
   Widget build(BuildContext context) {
@@ -611,20 +375,13 @@ class _SubtleSwitch extends StatelessWidget {
       behavior: HitTestBehavior.opaque,
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 4),
-        child: Row(
-          children: [
-            Text(label,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: value ? cs.primary : cs.onSurfaceVariant,
-                    )),
-            const Spacer(),
-            Switch.adaptive(
-              value: value,
-              onChanged: onChanged,
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            ),
-          ],
-        ),
+        child: Row(children: [
+          Text(label, style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              color: value ? cs.primary : cs.onSurfaceVariant)),
+          const Spacer(),
+          Switch.adaptive(value: value, onChanged: onChanged,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap),
+        ]),
       ),
     );
   }
@@ -646,58 +403,36 @@ class _SubtleTextField extends StatelessWidget {
         labelText: label,
         labelStyle: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
         isDense: true,
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
         filled: true,
         fillColor: cs.surfaceContainerHighest.withOpacity(0.4),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: BorderSide.none,
-        ),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
       ),
     );
   }
 }
-
-// ── Permission prompt ─────────────────────────────────────────────────────────
 
 class _PermissionPrompt extends StatelessWidget {
   final VoidCallback onRequest;
   const _PermissionPrompt({required this.onRequest});
 
   @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.photo_library_outlined, size: 64),
-            const SizedBox(height: 16),
-            const Text(
-              'PhotoVault needs access to your photos.',
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 16),
-            FilledButton(
-              onPressed: onRequest,
-              child: const Text('Grant Permission'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => Center(
+    child: Padding(
+      padding: const EdgeInsets.all(32),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        const Icon(Icons.photo_library_outlined, size: 64),
+        const SizedBox(height: 16),
+        const Text('PhotoVault needs access to your photos.', textAlign: TextAlign.center),
+        const SizedBox(height: 16),
+        FilledButton(onPressed: onRequest, child: const Text('Grant Permission')),
+      ]),
+    ),
+  );
 }
 
-/// Provider to share the current filtered list with ImageView for swipe nav.
 class FilteredListNotifier extends ChangeNotifier {
   List<dynamic> _list = [];
   List<dynamic> get list => _list;
-
-  void setList(List<dynamic> list) {
-    _list = list;
-    notifyListeners();
-  }
+  void setList(List<dynamic> list) { _list = list; notifyListeners(); }
 }

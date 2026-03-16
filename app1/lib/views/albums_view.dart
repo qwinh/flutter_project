@@ -28,8 +28,10 @@ class _AlbumsViewState extends State<AlbumsView> {
   bool _selectionMode = false;
   bool _favOnly = false;
 
-  // Tag filter: all tags whose IDs are in this set must be on the album (AND).
+  // Tag filter: included tags (AND/OR), excluded tags (NOT), mode toggle.
   Set<int> _tagFilter = {};
+  Set<int> _tagExclude = {};
+  bool _tagFilterAnd = true;
 
   @override
   void initState() {
@@ -55,10 +57,21 @@ class _AlbumsViewState extends State<AlbumsView> {
       }
       // Favorites-only toggle
       if (_favOnly && !a.isFavorite) return false;
-      // Tag AND filter: every selected tag must be on the album.
-      if (_tagFilter.isNotEmpty) {
+      // Unified R(f(a), f(b), ...) tag filter.
+      // include(x) => album HAS tag x
+      // exclude(x) => album does NOT have tag x
+      // R = _tagFilterAnd (ALL) or OR (ANY)
+      final allTagIds = {..._tagFilter, ..._tagExclude};
+      if (allTagIds.isNotEmpty) {
         final albumTagIds = ap.getTagIdsSync(a.id!).toSet();
-        if (!_tagFilter.every(albumTagIds.contains)) return false;
+        Iterable<bool> predicates = allTagIds.map((id) {
+          final hasTag = albumTagIds.contains(id);
+          return _tagFilter.contains(id) ? hasTag : !hasTag;
+        });
+        final match = _tagFilterAnd
+            ? predicates.every((p) => p)
+            : predicates.any((p) => p);
+        if (!match) return false;
       }
       return true;
     }).toList();
@@ -166,8 +179,12 @@ class _AlbumsViewState extends State<AlbumsView> {
           if (tp.tags.isNotEmpty)
             _TagFilterBar(
               tags: tp.tags,
-              selected: _tagFilter,
-              onChanged: (s) => setState(() => _tagFilter = s),
+              included: _tagFilter,
+              excluded: _tagExclude,
+              andMode: _tagFilterAnd,
+              onIncludedChanged: (s) => setState(() => _tagFilter = s),
+              onExcludedChanged: (s) => setState(() => _tagExclude = s),
+              onModeChanged: (v) => setState(() => _tagFilterAnd = v),
             ),
           // Album list
           Expanded(
@@ -366,40 +383,105 @@ class _AlbumThumbState extends State<_AlbumThumb> {
 
 // ── Tag filter bar ─────────────────────────────────────────────────────────────
 
-class _TagFilterBar extends StatelessWidget {
+class _TagFilterBar extends StatefulWidget {
   final List<TagModel> tags;
-  final Set<int> selected;
-  final ValueChanged<Set<int>> onChanged;
+  final Set<int> included;
+  final Set<int> excluded;
+  final bool andMode;
+  final ValueChanged<Set<int>> onIncludedChanged;
+  final ValueChanged<Set<int>> onExcludedChanged;
+  final ValueChanged<bool> onModeChanged;
 
   const _TagFilterBar({
     required this.tags,
-    required this.selected,
-    required this.onChanged,
+    required this.included,
+    required this.excluded,
+    required this.andMode,
+    required this.onIncludedChanged,
+    required this.onExcludedChanged,
+    required this.onModeChanged,
   });
 
   @override
+  State<_TagFilterBar> createState() => _TagFilterBarState();
+}
+
+class _TagFilterBarState extends State<_TagFilterBar> {
+  bool _sortActive = false;
+
+  void _tap(int id) {
+    if (widget.included.contains(id)) {
+      widget.onIncludedChanged({...widget.included}..remove(id));
+    } else if (widget.excluded.contains(id)) {
+      widget.onExcludedChanged({...widget.excluded}..remove(id));
+    } else {
+      widget.onIncludedChanged({...widget.included, id});
+      widget.onExcludedChanged({...widget.excluded}..remove(id));
+    }
+  }
+
+  void _hold(int id) {
+    widget.onExcludedChanged({...widget.excluded, id});
+    widget.onIncludedChanged({...widget.included}..remove(id));
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 48,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        children: tags.map((t) {
-          final active = selected.contains(t.id);
-          return Padding(
-            padding: const EdgeInsets.only(right: 6),
-            child: FilterChip(
-              label: Text(t.name),
-              selected: active,
-              onSelected: (v) {
-                final copy = Set<int>.from(selected);
-                v ? copy.add(t.id!) : copy.remove(t.id);
-                onChanged(copy);
-              },
+    final cs = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final hasFilter = widget.included.isNotEmpty || widget.excluded.isNotEmpty;
+
+    final base = [...widget.tags]..sort((a, b) => a.name.compareTo(b.name));
+    final sorted = _sortActive ? [
+      ...base.where((t) => widget.included.contains(t.id) || widget.excluded.contains(t.id)),
+      ...base.where((t) => !widget.included.contains(t.id) && !widget.excluded.contains(t.id)),
+    ] : base;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Row(children: [
+          Text('Tags', style: theme.textTheme.labelMedium?.copyWith(color: cs.onSurfaceVariant)),
+          const SizedBox(width: 6),
+          FilterPill(
+            label: widget.andMode ? 'ALL' : 'ANY',
+            color: cs.secondaryContainer, textColor: cs.onSecondaryContainer,
+            bold: true, onTap: () => widget.onModeChanged(!widget.andMode),
+          ),
+          const SizedBox(width: 6),
+          FilterPill(
+            label: _sortActive ? '● A-Z' : 'A-Z',
+            color: _sortActive ? cs.tertiaryContainer : cs.surfaceContainerHighest.withOpacity(0.5),
+            textColor: _sortActive ? cs.onTertiaryContainer : cs.onSurfaceVariant,
+            onTap: () => setState(() => _sortActive = !_sortActive),
+          ),
+          const Spacer(),
+          Text('tap · hold exclude', style: theme.textTheme.labelSmall
+              ?.copyWith(color: cs.onSurfaceVariant.withOpacity(0.5))),
+          if (hasFilter) ...[
+            const SizedBox(width: 6),
+            GestureDetector(
+              onTap: () { widget.onIncludedChanged({}); widget.onExcludedChanged({}); },
+              child: Icon(Icons.close, size: 15, color: cs.onSurfaceVariant.withOpacity(0.7)),
             ),
-          );
-        }).toList(),
-      ),
+          ],
+        ]),
+        const SizedBox(height: 5),
+        FilterScrollList(
+          maxHeight: 180,
+          itemCount: sorted.length,
+          itemBuilder: (_, i) {
+            final t = sorted[i];
+            return FilterListRow(
+              label: t.name,
+              included: widget.included.contains(t.id),
+              excluded: widget.excluded.contains(t.id),
+              onTap: () => _tap(t.id!),
+              onLongPress: () => _hold(t.id!),
+            );
+          },
+        ),
+      ]),
     );
   }
 }
