@@ -48,6 +48,12 @@ class _AlbumAddViewState extends State<AlbumAddView> {
     }
   }
 
+  void _removeImage(int index) {
+    final entity = _previewEntities[index];
+    context.read<SelectionProvider>().removeOne(entity.id);
+    setState(() => _previewEntities.removeAt(index));
+  }
+
   @override
   void dispose() {
     _nameCtrl.dispose();
@@ -226,15 +232,13 @@ class _AlbumAddViewState extends State<AlbumAddView> {
                   children: [
                     AssetThumb(
                       asset: e,
-                      onTap: () => setState(
-                          () => _previewEntities.removeAt(i)),
+                      onTap: () => _removeImage(i),
                     ),
                     Positioned(
                       top: 2,
                       right: 2,
                       child: GestureDetector(
-                        onTap: () =>
-                            setState(() => _previewEntities.removeAt(i)),
+                        onTap: () => _removeImage(i),
                         child: const CircleAvatar(
                           radius: 10,
                           backgroundColor: Colors.black54,
