@@ -188,8 +188,15 @@ class _ImagesViewState extends State<ImagesView> {
                               gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                                   crossAxisCount: cols, crossAxisSpacing: 2, mainAxisSpacing: 2),
                               itemCount: vis.length,
-                              itemBuilder: (ctx, i) => AssetThumb(
-                                asset: vis[i], selected: sel.isSelected(vis[i].id)),
+                              itemBuilder: (ctx, i) {
+                                final asset = vis[i];
+                                final idx = sel.assetIds.indexOf(asset.id);
+                                return AssetThumb(
+                                  asset: asset,
+                                  selected: idx >= 0,
+                                  selectionIndex: idx >= 0 ? idx + 1 : null,
+                                );
+                              },
                             ),
                           );
                         }),

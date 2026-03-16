@@ -39,7 +39,7 @@ class _AlbumViewState extends State<AlbumView> {
   List<int> _tagIds = [];
   bool _loading = true;
 
-  final Set<String> _selectedAssetIds = {};
+  final List<String> _selectedAssetIds = [];
   bool _selectionMode = false;
 
   @override
@@ -213,9 +213,11 @@ class _AlbumViewState extends State<AlbumView> {
                           final e = _entities[i];
                           final selected =
                               _selectedAssetIds.contains(e.id);
+                          final selIdx = _selectedAssetIds.indexOf(e.id);
                           return AssetThumb(
                             asset: e,
                             selected: selected,
+                            selectionIndex: selected ? selIdx + 1 : null,
                             onTap: () {
                               if (_selectionMode) {
                                 setState(() {
@@ -361,5 +363,3 @@ class _EditForm extends StatelessWidget {
     );
   }
 }
-
-

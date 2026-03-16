@@ -11,6 +11,9 @@ class AssetThumb extends StatelessWidget {
   final AssetEntity asset;
   final double size;
   final bool selected;
+  // When non-null and selected, shows this 1-based position number
+  // in the selection badge instead of a plain checkmark.
+  final int? selectionIndex;
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
 
@@ -19,6 +22,7 @@ class AssetThumb extends StatelessWidget {
     required this.asset,
     this.size = 80,
     this.selected = false,
+    this.selectionIndex,
     this.onTap,
     this.onLongPress,
   });
@@ -37,14 +41,32 @@ class AssetThumb extends StatelessWidget {
             thumbnailSize: ThumbnailSize.square(size.toInt()),
             fit: BoxFit.cover,
           ),
-          if (selected)
-            Container(
-              color: Colors.blue.withOpacity(0.40),
-              alignment: Alignment.topRight,
-              padding: const EdgeInsets.all(4),
-              child: const Icon(Icons.check_circle,
-                  color: Colors.white, size: 20),
+          if (selected) ...[
+            Container(color: Colors.blue.withOpacity(0.35)),
+            Positioned(
+              top: 4,
+              right: 4,
+              child: Container(
+                constraints: const BoxConstraints(minWidth: 20),
+                height: 20,
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                decoration: const BoxDecoration(
+                  color: Colors.blue,
+                  borderRadius: BorderRadius.all(Radius.circular(10)),
+                ),
+                alignment: Alignment.center,
+                child: Text(
+                  selectionIndex != null ? '$selectionIndex' : '✓',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    height: 1,
+                  ),
+                ),
+              ),
             ),
+          ],
         ],
       ),
     );
