@@ -347,173 +347,316 @@ class _FilterSheetState extends State<_FilterSheet> {
     super.dispose();
   }
 
-  void _toggleInclude(int albumId) {
-    final next = Set<int>.from(_state.includeAlbumIds);
-    if (next.contains(albumId)) {
-      next.remove(albumId);
+  // Tap → include. Tap again on included → clear. Double-tap → exclude.
+  // Double-tap on excluded → clear.
+  void _onAlbumTap(int albumId) {
+    final included = _state.includeAlbumIds.contains(albumId);
+    final excluded = _state.excludeAlbumIds.contains(albumId);
+    if (included) {
+      // clear
+      setState(() => _state = _state.copyWith(
+            includeAlbumIds: Set.from(_state.includeAlbumIds)..remove(albumId),
+          ));
+    } else if (excluded) {
+      // clear exclude too (in case tap after double-tap)
+      setState(() => _state = _state.copyWith(
+            excludeAlbumIds: Set.from(_state.excludeAlbumIds)..remove(albumId),
+          ));
     } else {
-      next.add(albumId);
-      final excl = Set<int>.from(_state.excludeAlbumIds)..remove(albumId);
-      setState(() =>
-          _state = _state.copyWith(includeAlbumIds: next, excludeAlbumIds: excl));
-      return;
+      // include
+      setState(() => _state = _state.copyWith(
+            includeAlbumIds: {..._state.includeAlbumIds, albumId},
+            excludeAlbumIds: Set.from(_state.excludeAlbumIds)..remove(albumId),
+          ));
     }
-    setState(() => _state = _state.copyWith(includeAlbumIds: next));
   }
 
-  void _toggleExclude(int albumId) {
-    final next = Set<int>.from(_state.excludeAlbumIds);
-    if (next.contains(albumId)) {
-      next.remove(albumId);
-    } else {
-      next.add(albumId);
-      final incl = Set<int>.from(_state.includeAlbumIds)..remove(albumId);
-      setState(() =>
-          _state = _state.copyWith(excludeAlbumIds: next, includeAlbumIds: incl));
-      return;
-    }
-    setState(() => _state = _state.copyWith(excludeAlbumIds: next));
+  void _onAlbumDoubleTap(int albumId) {
+    setState(() => _state = _state.copyWith(
+          excludeAlbumIds: {..._state.excludeAlbumIds, albumId},
+          includeAlbumIds: Set.from(_state.includeAlbumIds)..remove(albumId),
+        ));
   }
 
   @override
   Widget build(BuildContext context) {
     final albums = context.watch<AlbumProvider>().albums;
+    final sortedAlbums = [...albums]..sort((a, b) => a.name.compareTo(b.name));
     final theme = Theme.of(context);
+    final cs = theme.colorScheme;
 
     return Padding(
-      padding:
-          EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text('Filter & Sort', style: theme.textTheme.titleLarge),
-            const SizedBox(height: 16),
-
-            // ── In these albums (include) ──────────────────────────────────
-            Text('Show only — in these albums',
-                style: theme.textTheme.titleSmall),
-            const SizedBox(height: 6),
-            if (albums.isEmpty)
-              const Text('No albums yet.',
-                  style: TextStyle(color: Colors.grey))
-            else
-              Wrap(
-                spacing: 6,
-                runSpacing: 4,
-                children: albums.map((a) {
-                  final included = _state.includeAlbumIds.contains(a.id);
-                  return FilterChip(
-                    label: Text(a.name),
-                    selected: included,
-                    onSelected: (_) => _toggleInclude(a.id!),
-                    selectedColor: theme.colorScheme.primaryContainer,
-                    checkmarkColor: theme.colorScheme.onPrimaryContainer,
-                  );
-                }).toList(),
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // ── Handle bar ──────────────────────────────────────────────────
+          Center(
+            child: Container(
+              margin: const EdgeInsets.symmetric(vertical: 10),
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: cs.onSurfaceVariant.withOpacity(0.3),
+                borderRadius: BorderRadius.circular(2),
               ),
-            const SizedBox(height: 14),
-
-            // ── Not in these albums (exclude) ──────────────────────────────
-            Text('Hide — in these albums',
-                style: theme.textTheme.titleSmall),
-            const SizedBox(height: 6),
-            if (albums.isEmpty)
-              const Text('No albums yet.',
-                  style: TextStyle(color: Colors.grey))
-            else
-              Wrap(
-                spacing: 6,
-                runSpacing: 4,
-                children: albums.map((a) {
-                  final excluded = _state.excludeAlbumIds.contains(a.id);
-                  return FilterChip(
-                    label: Text(a.name),
-                    selected: excluded,
-                    onSelected: (_) => _toggleExclude(a.id!),
-                    selectedColor: theme.colorScheme.errorContainer,
-                    checkmarkColor: theme.colorScheme.onErrorContainer,
-                  );
-                }).toList(),
-              ),
-            const SizedBox(height: 8),
-
-            // ── Favorite albums only ───────────────────────────────────────
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('In favorite albums only'),
-              value: _state.onlyFavoriteAlbums,
-              onChanged: (v) => setState(
-                  () => _state = _state.copyWith(onlyFavoriteAlbums: v)),
             ),
+          ),
 
-            // ── Min dimensions ─────────────────────────────────────────────
-            Row(
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Expanded(
-                  child: TextField(
-                    controller: _minWCtrl,
-                    keyboardType: TextInputType.number,
-                    decoration:
-                        const InputDecoration(labelText: 'Min width (px)'),
+
+                // ── Albums ────────────────────────────────────────────────
+                if (albums.isNotEmpty) ...[
+                  Row(
+                    children: [
+                      Text('Albums', style: theme.textTheme.labelMedium
+                          ?.copyWith(color: cs.onSurfaceVariant)),
+                      const Spacer(),
+                      Text('tap include · hold exclude',
+                          style: theme.textTheme.labelSmall
+                              ?.copyWith(color: cs.onSurfaceVariant.withOpacity(0.6))),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 220),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: Material(
+                        color: cs.surfaceContainerHighest.withOpacity(0.45),
+                        child: ListView.separated(
+                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          shrinkWrap: true,
+                          itemCount: sortedAlbums.length,
+                          separatorBuilder: (_, __) => Divider(
+                            height: 1,
+                            indent: 16,
+                            endIndent: 16,
+                            color: cs.outlineVariant.withOpacity(0.3),
+                          ),
+                          itemBuilder: (_, i) {
+                            final a = sortedAlbums[i];
+                            final included = _state.includeAlbumIds.contains(a.id);
+                            final excluded = _state.excludeAlbumIds.contains(a.id);
+                            return GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onTap: () => _onAlbumTap(a.id!),
+                              onLongPress: () => _onAlbumDoubleTap(a.id!),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 16, vertical: 10),
+                                child: Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        a.name,
+                                        style: theme.textTheme.bodyMedium?.copyWith(
+                                          color: included
+                                              ? cs.primary
+                                              : excluded
+                                                  ? cs.error
+                                                  : null,
+                                          fontWeight: (included || excluded)
+                                              ? FontWeight.w500
+                                              : null,
+                                        ),
+                                      ),
+                                    ),
+                                    if (included)
+                                      Icon(Icons.check_circle_rounded,
+                                          size: 16, color: cs.primary)
+                                    else if (excluded)
+                                      Icon(Icons.remove_circle_rounded,
+                                          size: 16, color: cs.error)
+                                    else
+                                      const SizedBox(width: 16),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+
+                // ── Favorite albums only ────────────────────────────────
+                _SubtleSwitch(
+                  label: 'Favorite albums only',
+                  value: _state.onlyFavoriteAlbums,
+                  onChanged: (v) => setState(
+                      () => _state = _state.copyWith(onlyFavoriteAlbums: v)),
+                ),
+                const SizedBox(height: 8),
+
+                // ── Min dimensions ──────────────────────────────────────
+                Row(
+                  children: [
+                    Expanded(
+                      child: _SubtleTextField(
+                        controller: _minWCtrl,
+                        label: 'Min W (px)',
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _SubtleTextField(
+                        controller: _minHCtrl,
+                        label: 'Min H (px)',
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+
+                // ── Sort ────────────────────────────────────────────────
+                Text('Sort', style: theme.textTheme.labelMedium
+                    ?.copyWith(color: cs.onSurfaceVariant)),
+                const SizedBox(height: 6),
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    spacing: 6,
+                    children: ip.SortOrder.values.map((s) {
+                      final active = _state.sortOrder == s;
+                      return GestureDetector(
+                        onTap: () => setState(
+                            () => _state = _state.copyWith(sortOrder: s)),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 150),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: active
+                                ? cs.primaryContainer
+                                : cs.surfaceContainerHighest.withOpacity(0.4),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Text(
+                            _sortLabel(s),
+                            style: theme.textTheme.labelMedium?.copyWith(
+                              color: active
+                                  ? cs.onPrimaryContainer
+                                  : cs.onSurfaceVariant,
+                              fontWeight: active ? FontWeight.w600 : null,
+                            ),
+                          ),
+                        ),
+                      );
+                    }).toList(),
                   ),
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: TextField(
-                    controller: _minHCtrl,
-                    keyboardType: TextInputType.number,
-                    decoration:
-                        const InputDecoration(labelText: 'Min height (px)'),
-                  ),
+                const SizedBox(height: 16),
+
+                // ── Actions ─────────────────────────────────────────────
+                Row(
+                  children: [
+                    Expanded(
+                      child: FilledButton(
+                        onPressed: () {
+                          final w = int.tryParse(_minWCtrl.text);
+                          final h = int.tryParse(_minHCtrl.text);
+                          widget.onApply(
+                              _state.copyWith(minWidth: w, minHeight: h));
+                        },
+                        child: const Text('Apply'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    TextButton(
+                      onPressed: () =>
+                          widget.onApply(const ip.ImageFilterState()),
+                      child: const Text('Reset'),
+                    ),
+                  ],
                 ),
               ],
             ),
-            const SizedBox(height: 14),
+          ),
+        ],
+      ),
+    );
+  }
 
-            // ── Sort ───────────────────────────────────────────────────────
-            Text('Sort', style: theme.textTheme.titleSmall),
-            const SizedBox(height: 6),
-            Wrap(
-              spacing: 8,
-              children: ip.SortOrder.values.map((s) {
-                return ChoiceChip(
-                  label: Text(_sortLabel(s)),
-                  selected: _state.sortOrder == s,
-                  onSelected: (_) =>
-                      setState(() => _state = _state.copyWith(sortOrder: s)),
-                );
-              }).toList(),
-            ),
-            const SizedBox(height: 20),
+  String _sortLabel(ip.SortOrder s) => switch (s) {
+        ip.SortOrder.dateDesc => 'Newest',
+        ip.SortOrder.dateAsc => 'Oldest',
+        ip.SortOrder.nameAsc => 'A→Z',
+        ip.SortOrder.nameDesc => 'Z→A',
+      };
+}
 
-            FilledButton(
-              onPressed: () {
-                final w = int.tryParse(_minWCtrl.text);
-                final h = int.tryParse(_minHCtrl.text);
-                widget.onApply(_state.copyWith(minWidth: w, minHeight: h));
-              },
-              child: const Text('Apply'),
-            ),
-            const SizedBox(height: 6),
-            TextButton(
-              onPressed: () => widget.onApply(const ip.ImageFilterState()),
-              child: const Text('Reset filters'),
+// ── Subtle helper widgets ─────────────────────────────────────────────────────
+
+class _SubtleSwitch extends StatelessWidget {
+  final String label;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+  const _SubtleSwitch(
+      {required this.label, required this.value, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return GestureDetector(
+      onTap: () => onChanged(!value),
+      behavior: HitTestBehavior.opaque,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          children: [
+            Text(label,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: value ? cs.primary : cs.onSurfaceVariant,
+                    )),
+            const Spacer(),
+            Switch.adaptive(
+              value: value,
+              onChanged: onChanged,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
             ),
           ],
         ),
       ),
     );
   }
+}
 
-  String _sortLabel(ip.SortOrder s) => switch (s) {
-        ip.SortOrder.dateDesc => 'Newest first',
-        ip.SortOrder.dateAsc => 'Oldest first',
-        ip.SortOrder.nameAsc => 'Name A–Z',
-        ip.SortOrder.nameDesc => 'Name Z–A',
-      };
+class _SubtleTextField extends StatelessWidget {
+  final TextEditingController controller;
+  final String label;
+  const _SubtleTextField({required this.controller, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return TextField(
+      controller: controller,
+      keyboardType: TextInputType.number,
+      style: Theme.of(context).textTheme.bodyMedium,
+      decoration: InputDecoration(
+        labelText: label,
+        labelStyle: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+        isDense: true,
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        filled: true,
+        fillColor: cs.surfaceContainerHighest.withOpacity(0.4),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(8),
+          borderSide: BorderSide.none,
+        ),
+      ),
+    );
+  }
 }
 
 // ── Permission prompt ─────────────────────────────────────────────────────────
