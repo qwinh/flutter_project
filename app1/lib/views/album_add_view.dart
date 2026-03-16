@@ -230,10 +230,7 @@ class _AlbumAddViewState extends State<AlbumAddView> {
                 return Stack(
                   fit: StackFit.expand,
                   children: [
-                    AssetThumb(
-                      asset: e,
-                      onTap: () => _removeImage(i),
-                    ),
+                    AssetThumb(asset: e),
                     Positioned(
                       top: 2,
                       right: 2,

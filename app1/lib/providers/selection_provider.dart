@@ -1,11 +1,13 @@
 // lib/providers/selection_provider.dart
 // Manages the global selected-images pool (persisted in SQLite).
 //
-// Design:
-// - _assetIds (List) preserves insertion order for ImagesSelectedView reordering.
-// - _selectedSet (Set) mirrors _assetIds for O(1) isSelected() lookups.
-// - Entities are resolved lazily — call resolveEntities() only when needed
-//   (i.e. when ImagesSelectedView is opened), not on every toggle.
+// _assetIds  — ordered list, drives UI and DB persistence
+// _selectedSet — mirrors _assetIds for O(1) isSelected() lookups
+// _entities  — resolved AssetEntity objects, lazy (call resolveEntities())
+//
+// All async mutations update _selectedSet BEFORE awaiting DB so that
+// concurrent calls (e.g. rapid drag events) see a consistent in-memory
+// state and don't double-add or double-remove.
 
 import 'package:flutter/foundation.dart';
 import 'package:photo_manager/photo_manager.dart';
@@ -28,7 +30,9 @@ class SelectionProvider extends ChangeNotifier {
   bool get isEmpty => _assetIds.isEmpty;
   int get count => _assetIds.length;
 
-  bool isSelected(String assetId) => _selectedSet.contains(assetId);
+  bool isSelected(String id) => _selectedSet.contains(id);
+
+  // ── Load ──────────────────────────────────────────────────────────────────
 
   Future<void> load() async {
     _assetIds = await _db.getSelectedAssetIds();
@@ -37,123 +41,138 @@ class SelectionProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Resolves AssetEntity objects for the current selection.
-  /// Call this when ImagesSelectedView is about to display the list.
+  // ── Entity resolution (lazy) ──────────────────────────────────────────────
+
   Future<void> resolveEntities() async {
     if (!_entitiesDirty) return;
     final resolved = <AssetEntity>[];
-    for (final id in _assetIds) {
-      final entity = await AssetEntity.fromId(id);
-      if (entity != null) resolved.add(entity);
+    for (final id in List.of(_assetIds)) {
+      final e = await AssetEntity.fromId(id);
+      if (e != null) resolved.add(e);
     }
     _entities = resolved;
     _entitiesDirty = false;
     notifyListeners();
   }
 
-  Future<void> toggle(String assetId) async {
-    if (_selectedSet.contains(assetId)) {
-      await _db.removeFromSelected(assetId);
-      _assetIds = List.from(_assetIds)..remove(assetId);
-      _selectedSet.remove(assetId);
+  // ── Single-item mutations ─────────────────────────────────────────────────
+
+  Future<void> toggle(String id) async {
+    if (_selectedSet.contains(id)) {
+      _assetIds = List.from(_assetIds)..remove(id);
+      _selectedSet.remove(id);
+      _entitiesDirty = true;
+      notifyListeners();
+      await _db.removeFromSelected(id);
     } else {
-      await _db.addToSelected(assetId);
-      _assetIds = List.from(_assetIds)..add(assetId);
-      _selectedSet.add(assetId);
+      _assetIds = List.from(_assetIds)..add(id);
+      _selectedSet.add(id);
+      _entitiesDirty = true;
+      notifyListeners();
+      await _db.addToSelected(id);
     }
-    _entitiesDirty = true;
-    notifyListeners();
   }
 
-  Future<void> select(String assetId) async {
-    if (_selectedSet.contains(assetId)) return;
-    await _db.addToSelected(assetId);
-    _assetIds = List.from(_assetIds)..add(assetId);
-    _selectedSet.add(assetId);
+  Future<void> select(String id) async {
+    if (_selectedSet.contains(id)) return;
+    _assetIds = List.from(_assetIds)..add(id);
+    _selectedSet.add(id);
     _entitiesDirty = true;
     notifyListeners();
+    await _db.addToSelected(id);
   }
 
-  Future<void> deselect(String assetId) async {
-    if (!_selectedSet.contains(assetId)) return;
-    await _db.removeFromSelected(assetId);
-    _assetIds = List.from(_assetIds)..remove(assetId);
-    _selectedSet.remove(assetId);
+  Future<void> deselect(String id) async {
+    if (!_selectedSet.contains(id)) return;
+    _assetIds = List.from(_assetIds)..remove(id);
+    _selectedSet.remove(id);
     _entitiesDirty = true;
     notifyListeners();
+    await _db.removeFromSelected(id);
   }
 
-  Future<void> addMultiple(Set<String> assetIds) async {
-    final toAdd = assetIds.where((id) => !_selectedSet.contains(id)).toList();
+  /// Removes one item and keeps _entities in sync immediately (no re-resolve needed).
+  Future<void> removeOne(String id) async {
+    if (!_selectedSet.contains(id)) return;
+    _assetIds = List.from(_assetIds)..remove(id);
+    _selectedSet.remove(id);
+    _entities = _entities.where((e) => e.id != id).toList();
+    // _entitiesDirty stays false — entities list is already correct
+    notifyListeners();
+    await _db.removeFromSelected(id);
+  }
+
+  // ── Batch mutations ───────────────────────────────────────────────────────
+
+  Future<void> addMultiple(Set<String> ids) async {
+    final toAdd = ids.where((id) => !_selectedSet.contains(id)).toList();
     if (toAdd.isEmpty) return;
-    await _db.addMultipleToSelected(toAdd);
     _assetIds = List.from(_assetIds)..addAll(toAdd);
     _selectedSet.addAll(toAdd);
     _entitiesDirty = true;
     notifyListeners();
+    await _db.addMultipleToSelected(toAdd);
   }
 
-  Future<void> removeMultiple(Set<String> assetIds) async {
-    final toRemove = assetIds.where((id) => _selectedSet.contains(id)).toList();
+  Future<void> removeMultiple(Set<String> ids) async {
+    final toRemove = ids.where((id) => _selectedSet.contains(id)).toList();
     if (toRemove.isEmpty) return;
-    await _db.removeMultipleFromSelected(toRemove);
     final removeSet = toRemove.toSet();
     _assetIds = _assetIds.where((id) => !removeSet.contains(id)).toList();
     _selectedSet.removeAll(removeSet);
     _entitiesDirty = true;
     notifyListeners();
+    await _db.removeMultipleFromSelected(toRemove);
   }
 
+  /// Atomically sets selection to exactly [desired].
+  /// Updates in-memory state immediately before any DB writes so rapid
+  /// concurrent calls (drag sweep) see consistent state.
   Future<void> setSelection(Set<String> desired) async {
     final toAdd = desired.difference(_selectedSet).toList();
     final toRemove = _selectedSet.difference(desired).toList();
     if (toAdd.isEmpty && toRemove.isEmpty) return;
-    if (toAdd.isNotEmpty) await _db.addMultipleToSelected(toAdd);
-    if (toRemove.isNotEmpty) await _db.removeMultipleFromSelected(toRemove);
+
+    // Update in-memory first.
     final removeSet = toRemove.toSet();
-    final newIds = _assetIds
-        .where((id) => !removeSet.contains(id))
-        .toList()
-      ..addAll(toAdd);
-    _assetIds = newIds;
+    _assetIds = [
+      ..._assetIds.where((id) => !removeSet.contains(id)),
+      ...toAdd,
+    ];
     _selectedSet..removeAll(removeSet)..addAll(toAdd);
     _entitiesDirty = true;
     notifyListeners();
-  }
 
-  Future<void> removeOne(String assetId) async {
-    await _db.removeFromSelected(assetId);
-    _assetIds = List.from(_assetIds)..remove(assetId);
-    _selectedSet.remove(assetId);
-    _entities = _entities.where((e) => e.id != assetId).toList();
-    notifyListeners();
+    // Persist asynchronously.
+    if (toAdd.isNotEmpty) await _db.addMultipleToSelected(toAdd);
+    if (toRemove.isNotEmpty) await _db.removeMultipleFromSelected(toRemove);
   }
 
   Future<void> clearAll() async {
-    await _db.clearSelected();
     _assetIds = [];
     _selectedSet.clear();
     _entities = [];
     _entitiesDirty = false;
     notifyListeners();
+    await _db.clearSelected();
   }
+
+  // ── Reorder (in-memory; call persistOrder to save) ────────────────────────
 
   void reorder(int oldIndex, int newIndex) {
     if (newIndex > oldIndex) newIndex--;
-    final idsCopy = List<String>.from(_assetIds);
-    final entCopy = List<AssetEntity>.from(_entities);
-    final id = idsCopy.removeAt(oldIndex);
-    idsCopy.insert(newIndex, id);
-    if (oldIndex < entCopy.length) {
-      final ent = entCopy.removeAt(oldIndex);
-      entCopy.insert(newIndex, ent);
+    final ids = List<String>.from(_assetIds);
+    final ents = List<AssetEntity>.from(_entities);
+    final id = ids.removeAt(oldIndex);
+    ids.insert(newIndex, id);
+    if (oldIndex < ents.length) {
+      final e = ents.removeAt(oldIndex);
+      ents.insert(newIndex, e);
     }
-    _assetIds = idsCopy;
-    _entities = entCopy;
+    _assetIds = ids;
+    _entities = ents;
     notifyListeners();
   }
 
-  Future<void> persistOrder() async {
-    await _db.setSelectedOrder(_assetIds);
-  }
+  Future<void> persistOrder() async => _db.setSelectedOrder(_assetIds);
 }
