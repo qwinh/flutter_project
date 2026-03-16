@@ -55,6 +55,11 @@ class _AppRootState extends State<_AppRoot> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      // Wire AlbumProvider to DeviceImageProvider so image mutations
+      // automatically invalidate the filter cache.
+      context.read<AlbumProvider>().attachImageProvider(
+            context.read<DeviceImageProvider>(),
+          );
       // Eagerly load albums and tags so the filter sheet has data on first open.
       context.read<AlbumProvider>().load();
       context.read<TagProvider>().load();

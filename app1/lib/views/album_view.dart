@@ -86,6 +86,12 @@ class _AlbumViewState extends State<AlbumView> {
   }
 
   Future<void> _saveEdits() async {
+    if (_nameCtrl.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Album name cannot be empty.')));
+      return;
+    }
+
     final ap = context.read<AlbumProvider>();
     final album = ap.getById(widget.albumId);
     if (album == null) return;

@@ -285,27 +285,30 @@ class _AlbumTile extends StatelessWidget {
       onDismissed: (_) => onDelete(),
       child: GestureDetector(
         onDoubleTap: onDoubleTap,
-        child: ListTile(
-          selected: isSelected,
-          leading: _AlbumThumb(albumId: album.id!, provider: ap),
-          title: Text(album.name),
-          subtitle: album.description.isNotEmpty
-              ? Text(album.description,
-                  maxLines: 1, overflow: TextOverflow.ellipsis)
-              : null,
-          trailing: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (album.isFavorite)
-                const Icon(Icons.favorite, color: Colors.pink, size: 18),
-              if (selectionMode)
-                Icon(isSelected
-                    ? Icons.check_circle
-                    : Icons.radio_button_unchecked),
-            ],
+        child: Tooltip(
+          message: 'Double-tap to toggle favorite',
+          child: ListTile(
+            selected: isSelected,
+            leading: _AlbumThumb(albumId: album.id!, provider: ap),
+            title: Text(album.name),
+            subtitle: album.description.isNotEmpty
+                ? Text(album.description,
+                    maxLines: 1, overflow: TextOverflow.ellipsis)
+                : null,
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (album.isFavorite)
+                  const Icon(Icons.favorite, color: Colors.pink, size: 18),
+                if (selectionMode)
+                  Icon(isSelected
+                      ? Icons.check_circle
+                      : Icons.radio_button_unchecked),
+              ],
+            ),
+            onTap: onTap,
+            onLongPress: onLongPress,
           ),
-          onTap: onTap,
-          onLongPress: onLongPress,
         ),
       ),
     );

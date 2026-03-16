@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 
 import '../db/database_helper.dart';
 import '../models/models.dart';
+import 'image_provider.dart';
 
 class AlbumProvider extends ChangeNotifier {
   final _db = DatabaseHelper.instance;
@@ -20,6 +21,10 @@ class AlbumProvider extends ChangeNotifier {
 
   bool _loading = false;
   bool get loading => _loading;
+
+  // Weak back-reference so image mutations can invalidate the filter cache.
+  DeviceImageProvider? _imageProv;
+  void attachImageProvider(DeviceImageProvider p) => _imageProv = p;
 
   Future<void> load() async {
     _loading = true;
@@ -96,12 +101,14 @@ class AlbumProvider extends ChangeNotifier {
     await _db.addImagesToAlbum(albumId, assetIds);
     // Re-fetch so the cache is warm before listeners rebuild.
     _albumAssetIds[albumId] = await _db.getAssetIdsForAlbum(albumId);
+    _imageProv?.invalidateFilterCache();
     notifyListeners();
   }
 
   Future<void> removeImageFromAlbum(int albumId, String assetId) async {
     await _db.removeImageFromAlbum(albumId, assetId);
     _albumAssetIds[albumId]?.remove(assetId);
+    _imageProv?.invalidateFilterCache();
     notifyListeners();
   }
 
@@ -116,6 +123,7 @@ class AlbumProvider extends ChangeNotifier {
       _albumAssetIds[albumId] =
           cached.where((id) => !removeSet.contains(id)).toList();
     }
+    _imageProv?.invalidateFilterCache();
     notifyListeners();
   }
 

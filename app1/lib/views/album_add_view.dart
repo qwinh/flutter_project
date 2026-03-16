@@ -5,10 +5,12 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:photo_manager/photo_manager.dart';
+import 'package:photo_manager_image_provider/photo_manager_image_provider.dart';
 import 'package:provider/provider.dart';
 
 import '../models/models.dart';
 import '../providers/album_provider.dart';
+import '../providers/image_provider.dart' as ip;
 import '../providers/selection_provider.dart';
 import '../providers/tag_provider.dart';
 import '../services/notification_service.dart';
@@ -190,11 +192,23 @@ class _AlbumAddViewState extends State<AlbumAddView> {
               ),
               const Spacer(),
               TextButton.icon(
-                onPressed: () {
-                  // Navigate to images view; user selects more there.
-                  // The selection pool persists so they come back with
-                  // updated pool.
-                  context.push('/images').then((_) => _syncFromSelection());
+                onPressed: () async {
+                  await showModalBottomSheet(
+                    context: context,
+                    isScrollControlled: true,
+                    useSafeArea: true,
+                    builder: (_) => _ImagePickerSheet(
+                      alreadySelected:
+                          _previewEntities.map((e) => e.id).toSet(),
+                      onConfirm: (picked) async {
+                        final sp = context.read<SelectionProvider>();
+                        for (final e in picked) {
+                          await sp.select(e.id);
+                        }
+                      },
+                    ),
+                  );
+                  await _syncFromSelection();
                 },
                 icon: const Icon(Icons.add_photo_alternate_outlined),
                 label: const Text('Add more'),
@@ -250,6 +264,141 @@ class _AlbumAddViewState extends State<AlbumAddView> {
             ),
         ],
       ),
+    );
+  }
+}
+
+// ── Inline image picker sheet ─────────────────────────────────────────────────
+
+class _ImagePickerSheet extends StatefulWidget {
+  final Set<String> alreadySelected;
+  final Future<void> Function(List<AssetEntity> picked) onConfirm;
+
+  const _ImagePickerSheet({
+    required this.alreadySelected,
+    required this.onConfirm,
+  });
+
+  @override
+  State<_ImagePickerSheet> createState() => _ImagePickerSheetState();
+}
+
+class _ImagePickerSheetState extends State<_ImagePickerSheet> {
+  final Set<String> _picked = {};
+  bool _confirming = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Pre-tick anything already in the selection pool so state is consistent.
+    _picked.addAll(widget.alreadySelected);
+  }
+
+  Future<void> _confirm(List<AssetEntity> all) async {
+    setState(() => _confirming = true);
+    // Only pass newly picked items (not what was already in the pool).
+    final newOnes = all
+        .where((e) =>
+            _picked.contains(e.id) && !widget.alreadySelected.contains(e.id))
+        .toList();
+    await widget.onConfirm(newOnes);
+    if (mounted) Navigator.pop(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final imgProv = context.watch<ip.DeviceImageProvider>();
+    final assets = imgProv.all;
+
+    return DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.85,
+      minChildSize: 0.5,
+      maxChildSize: 0.95,
+      builder: (_, scrollCtrl) {
+        return Column(
+          children: [
+            // Handle
+            Center(
+              child: Container(
+                margin: const EdgeInsets.symmetric(vertical: 10),
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Theme.of(context)
+                      .colorScheme
+                      .onSurfaceVariant
+                      .withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Row(
+                children: [
+                  Text(
+                    'Select photos',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  const Spacer(),
+                  FilledButton(
+                    onPressed: _confirming ? null : () => _confirm(assets),
+                    child: Text(
+                      _picked.isEmpty
+                          ? 'Done'
+                          : 'Add ${(_picked.difference(widget.alreadySelected)).length}',
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: imgProv.loading
+                  ? const Center(child: CircularProgressIndicator())
+                  : GridView.builder(
+                      controller: scrollCtrl,
+                      padding: const EdgeInsets.all(2),
+                      gridDelegate:
+                          const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 4,
+                        crossAxisSpacing: 2,
+                        mainAxisSpacing: 2,
+                      ),
+                      itemCount: assets.length,
+                      itemBuilder: (_, i) {
+                        final e = assets[i];
+                        final selected = _picked.contains(e.id);
+                        return GestureDetector(
+                          onTap: () => setState(() {
+                            selected ? _picked.remove(e.id) : _picked.add(e.id);
+                          }),
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              AssetEntityImage(
+                                e,
+                                isOriginal: false,
+                                fit: BoxFit.cover,
+                              ),
+                              if (selected)
+                                Container(
+                                  color: Colors.blue.withOpacity(0.4),
+                                  alignment: Alignment.topRight,
+                                  padding: const EdgeInsets.all(4),
+                                  child: const Icon(Icons.check_circle,
+                                      color: Colors.white, size: 20),
+                                ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        );
+      },
     );
   }
 }
