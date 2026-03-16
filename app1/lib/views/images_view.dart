@@ -1,12 +1,8 @@
 // lib/views/images_view.dart
-// Displays all device images in a grid.
-// Supports filtering (include/exclude albums, favorite albums, dimensions,
-// selected-only) and sorting.
-// Long-press to enter multi-select; drag (with auto-scroll) to sweep select/deselect.
-// Selected images go to the global SelectionProvider pool.
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:photo_manager/photo_manager.dart' as ip;
 import 'package:provider/provider.dart';
 
 import '../providers/album_provider.dart';
@@ -31,6 +27,13 @@ class _ImagesViewState extends State<ImagesView> {
 
   bool _dragDeselectMode = false;
   Set<String> _preDragSelection = {};
+
+  // ── Local hide-selected state ─────────────────────────────────────────────
+  // Accumulated set of IDs hidden by pressing the hide button.
+  // Tap: union current selection into this set.
+  // Double-tap: clear this set (unhide all).
+  // Lives only in this widget — nothing is stored or persisted.
+  Set<String> _hiddenIds = {};
 
   @override
   void initState() {
@@ -58,49 +61,59 @@ class _ImagesViewState extends State<ImagesView> {
   }
 
   void _enterSelectionMode() => setState(() => _selectionMode = true);
-
   void _exitSelectionMode() => setState(() => _selectionMode = false);
 
-  // ── Sync selection → image provider so onlySelected filter stays live ──────
+  // ── Hide button logic ─────────────────────────────────────────────────────
 
-  void _syncSelectedFilter(ip.DeviceImageProvider imgProv, SelectionProvider selProv) {
-    if (imgProv.filterState.hideSelected) {
-      imgProv.updateSelectedIds(selProv.assetIds.toSet());
-    }
+  /// Single tap: snapshot current selection into hidden set (additive).
+  void _hideSelected(SelectionProvider selProv) {
+    if (selProv.count == 0) return;
+    setState(() {
+      _hiddenIds = {..._hiddenIds, ...selProv.assetIds};
+    });
+  }
+
+  /// Double-tap: clear all hidden IDs, everything reappears.
+  void _unhideAll() {
+    setState(() => _hiddenIds = {});
+  }
+
+  // ── Visible assets (provider filtered list minus locally hidden) ──────────
+
+  List<ip.AssetEntity> _visibleAssets(ip.DeviceImageProvider imgProv) {
+    if (_hiddenIds.isEmpty) return imgProv.filtered;
+    return imgProv.filtered
+        .where((a) => !_hiddenIds.contains(a.id))
+        .toList();
   }
 
   // ── DragSelectGrid callbacks ───────────────────────────────────────────────
 
-  void _onDragSelectionStart(int startIndex) {
+  void _onDragSelectionStart(int startIndex, List<ip.AssetEntity> visible) {
     final selProv = context.read<SelectionProvider>();
-    final imgProv = context.read<ip.DeviceImageProvider>();
-    final id = imgProv.filtered[startIndex].id;
+    final id = visible[startIndex].id;
 
     _dragDeselectMode = selProv.isSelected(id);
     _preDragSelection = selProv.assetIds.toSet();
 
     setState(() => _selectionMode = true);
 
-    if (!_dragDeselectMode) {
-      selProv.select(id).then((_) => _syncSelectedFilter(imgProv, selProv));
-    }
+    if (!_dragDeselectMode) selProv.select(id);
   }
 
-  void _onDragSelectionUpdate(int startIndex, int endIndex) {
+  void _onDragSelectionUpdate(int startIndex, int endIndex, List<ip.AssetEntity> visible) {
     final selProv = context.read<SelectionProvider>();
-    final imgProv = context.read<ip.DeviceImageProvider>();
 
     final sweepIds = <String>{};
-    final assets = imgProv.filtered;
     for (int i = startIndex; i <= endIndex; i++) {
-      if (i < assets.length) sweepIds.add(assets[i].id);
+      if (i < visible.length) sweepIds.add(visible[i].id);
     }
 
     final desired = _dragDeselectMode
         ? _preDragSelection.difference(sweepIds)
         : _preDragSelection.union(sweepIds);
 
-    selProv.setSelection(desired).then((_) => _syncSelectedFilter(imgProv, selProv));
+    selProv.setSelection(desired);
   }
 
   void _onDragSelectionEnd() {
@@ -108,43 +121,25 @@ class _ImagesViewState extends State<ImagesView> {
     _dragDeselectMode = false;
   }
 
-  void _onItemTap(int index) {
+  void _onItemTap(int index, List<ip.AssetEntity> visible) {
     final selProv = context.read<SelectionProvider>();
-    final imgProv = context.read<ip.DeviceImageProvider>();
-    final assets = imgProv.filtered;
     if (_selectionMode) {
-      selProv.toggle(assets[index].id).then((_) {
-        _syncSelectedFilter(imgProv, selProv);
+      selProv.toggle(visible[index].id).then((_) {
         if (selProv.count == 0) _exitSelectionMode();
       });
     } else {
-      context.read<FilteredListNotifier>().setList(assets);
+      context.read<FilteredListNotifier>().setList(visible);
       context.push('/images/view/$index');
     }
   }
 
-  // ── Filter helpers ─────────────────────────────────────────────────────────
-
-  void _toggleOnlySelected(ip.DeviceImageProvider imgProv, SelectionProvider selProv) {
-    final next = !imgProv.filterState.hideSelected;
-    if (next) {
-      // Prime the set before activating the filter.
-      imgProv.updateSelectedIds(selProv.assetIds.toSet());
-    }
-    imgProv.setFilter(imgProv.filterState.copyWith(hideSelected: next));
-  }
-
-  void _showFilterSheet(BuildContext context, ip.DeviceImageProvider imgProv, SelectionProvider selProv) {
+  void _showFilterSheet(BuildContext context, ip.DeviceImageProvider imgProv) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       builder: (_) => _FilterSheet(
         current: imgProv.filterState,
-        hasSelection: selProv.count > 0,
         onApply: (state) {
-          if (state.hideSelected) {
-            imgProv.updateSelectedIds(selProv.assetIds.toSet());
-          }
           imgProv.setFilter(state);
           Navigator.pop(context);
         },
@@ -158,6 +153,8 @@ class _ImagesViewState extends State<ImagesView> {
     final selProv = context.watch<SelectionProvider>();
     final selCount = selProv.count;
     final filterState = imgProv.filterState;
+    final visible = _visibleAssets(imgProv);
+    final hidingAny = _hiddenIds.isNotEmpty;
 
     context.read<SelectionCountNotifier>().update(selCount);
 
@@ -168,59 +165,72 @@ class _ImagesViewState extends State<ImagesView> {
             : const Text('Photos'),
         actions: [
           if (_selectionMode) ...[
-            // Deselect all
             IconButton(
               icon: const Icon(Icons.deselect),
               tooltip: 'Deselect all',
               onPressed: selCount > 0
                   ? () {
                       selProv.clearAll();
-                      _syncSelectedFilter(imgProv, selProv);
                       _exitSelectionMode();
                     }
                   : null,
             ),
-            // Select all visible
             IconButton(
               icon: const Icon(Icons.select_all),
-              tooltip: 'Select all',
+              tooltip: 'Select all visible',
               onPressed: () {
-                final allIds = imgProv.filtered.map((a) => a.id).toSet();
-                selProv.addMultiple(allIds).then(
-                    (_) => _syncSelectedFilter(imgProv, selProv));
+                final allIds = visible.map((a) => a.id).toSet();
+                selProv.addMultiple(allIds);
               },
             ),
+            // Hide selected: single tap hides, double-tap unhides all.
+            if (selCount > 0)
+              GestureDetector(
+                onDoubleTap: _unhideAll,
+                child: IconButton(
+                  icon: Icon(
+                    hidingAny ? Icons.visibility_off : Icons.visibility_off_outlined,
+                    color: hidingAny
+                        ? Theme.of(context).colorScheme.primary
+                        : null,
+                  ),
+                  tooltip: hidingAny
+                      ? 'Tap to hide more · Double-tap to show all'
+                      : 'Hide selected from view',
+                  onPressed: () => _hideSelected(selProv),
+                ),
+              ),
             IconButton(
               icon: const Icon(Icons.close),
               tooltip: 'Exit selection',
               onPressed: _exitSelectionMode,
             ),
           ] else ...[
-            // Quick "show selected" toggle — only visible when there's a selection
-            if (selCount > 0)
-              IconButton(
-                icon: Icon(
-                  filterState.hideSelected
-                      ? Icons.filter_alt
-                      : Icons.filter_alt_outlined,
-                  color: filterState.hideSelected
-                      ? Theme.of(context).colorScheme.primary
-                      : null,
+            // Hide button: visible whenever there's a selection or items are hidden.
+            // Tap hides current selection, double-tap unhides all.
+            if (selCount > 0 || hidingAny)
+              GestureDetector(
+                onDoubleTap: hidingAny ? _unhideAll : null,
+                child: IconButton(
+                  icon: Icon(
+                    hidingAny ? Icons.visibility_off : Icons.visibility_off_outlined,
+                    color: hidingAny
+                        ? Theme.of(context).colorScheme.primary
+                        : null,
+                  ),
+                  tooltip: hidingAny
+                      ? 'Tap to hide more · Double-tap to show all'
+                      : 'Hide selected from view',
+                  onPressed: selCount > 0 ? () => _hideSelected(selProv) : null,
                 ),
-                tooltip: filterState.hideSelected
-                    ? 'Hiding selected — tap to clear'
-                    : 'Hide selected',
-                onPressed: () => _toggleOnlySelected(imgProv, selProv),
               ),
-            // Filter icon with active-dot badge
             Stack(
               clipBehavior: Clip.none,
               children: [
                 IconButton(
                   icon: const Icon(Icons.filter_list),
                   tooltip: 'Filters & Sort',
-                  onPressed: () =>
-                      _showFilterSheet(context, imgProv, selProv),
+                  onPressed: () => _showFilterSheet(context, imgProv),
                 ),
                 if (filterState.hasAnyFilter)
                   Positioned(
@@ -243,22 +253,19 @@ class _ImagesViewState extends State<ImagesView> {
       body: imgProv.loading
           ? const Center(child: CircularProgressIndicator())
           : !imgProv.permissionGranted
-              ? _PermissionPrompt(
-                  onRequest: imgProv.requestPermissionAndLoad)
+              ? _PermissionPrompt(onRequest: imgProv.requestPermissionAndLoad)
               : RefreshIndicator(
                   onRefresh: () =>
                       context.read<ip.DeviceImageProvider>().loadAll(),
-                  child: imgProv.filtered.isEmpty
+                  child: visible.isEmpty
                       ? SingleChildScrollView(
                           physics: const AlwaysScrollableScrollPhysics(),
                           child: SizedBox(
                             height: 300,
                             child: Center(
-                              child: Text(
-                                filterState.hideSelected
-                                    ? 'No unselected photos.'
-                                    : 'No photos found.',
-                              ),
+                              child: Text(hidingAny
+                                  ? 'All photos are hidden.'
+                                  : 'No photos found.'),
                             ),
                           ),
                         )
@@ -267,7 +274,7 @@ class _ImagesViewState extends State<ImagesView> {
                             final gridWidth = constraints.maxWidth;
                             final cols =
                                 (gridWidth / 120).floor().clamp(3, 6);
-                            final itemCount = imgProv.filtered.length;
+                            final itemCount = visible.length;
                             return DragSelectGrid(
                               scrollController: _scrollController,
                               crossAxisCount: cols,
@@ -275,23 +282,25 @@ class _ImagesViewState extends State<ImagesView> {
                               spacing: 2,
                               padding: const EdgeInsets.all(2),
                               isInSelectionMode: _selectionMode,
-                              onSelectionStart: _onDragSelectionStart,
-                              onSelectionUpdate: _onDragSelectionUpdate,
+                              onSelectionStart: (i) =>
+                                  _onDragSelectionStart(i, visible),
+                              onSelectionUpdate: (s, e) =>
+                                  _onDragSelectionUpdate(s, e, visible),
                               onSelectionEnd: _onDragSelectionEnd,
-                              onItemTap: _onItemTap,
+                              onItemTap: (i) => _onItemTap(i, visible),
                               child: GridView.builder(
                                 controller: _scrollController,
-                                physics:
-                                    const AlwaysScrollableScrollPhysics(),
+                                physics: const AlwaysScrollableScrollPhysics(),
                                 padding: const EdgeInsets.all(2),
-                                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                                gridDelegate:
+                                    SliverGridDelegateWithFixedCrossAxisCount(
                                   crossAxisCount: cols,
                                   crossAxisSpacing: 2,
                                   mainAxisSpacing: 2,
                                 ),
                                 itemCount: itemCount,
                                 itemBuilder: (ctx, i) {
-                                  final asset = imgProv.filtered[i];
+                                  final asset = visible[i];
                                   return AssetThumb(
                                     asset: asset,
                                     selected: selProv.isSelected(asset.id),
@@ -310,14 +319,9 @@ class _ImagesViewState extends State<ImagesView> {
 
 class _FilterSheet extends StatefulWidget {
   final ip.ImageFilterState current;
-  final bool hasSelection;
   final ValueChanged<ip.ImageFilterState> onApply;
 
-  const _FilterSheet({
-    required this.current,
-    required this.hasSelection,
-    required this.onApply,
-  });
+  const _FilterSheet({required this.current, required this.onApply});
 
   @override
   State<_FilterSheet> createState() => _FilterSheetState();
@@ -350,8 +354,8 @@ class _FilterSheetState extends State<_FilterSheet> {
     } else {
       next.add(albumId);
       final excl = Set<int>.from(_state.excludeAlbumIds)..remove(albumId);
-      setState(() => _state =
-          _state.copyWith(includeAlbumIds: next, excludeAlbumIds: excl));
+      setState(() =>
+          _state = _state.copyWith(includeAlbumIds: next, excludeAlbumIds: excl));
       return;
     }
     setState(() => _state = _state.copyWith(includeAlbumIds: next));
@@ -364,8 +368,8 @@ class _FilterSheetState extends State<_FilterSheet> {
     } else {
       next.add(albumId);
       final incl = Set<int>.from(_state.includeAlbumIds)..remove(albumId);
-      setState(() => _state =
-          _state.copyWith(excludeAlbumIds: next, includeAlbumIds: incl));
+      setState(() =>
+          _state = _state.copyWith(excludeAlbumIds: next, includeAlbumIds: incl));
       return;
     }
     setState(() => _state = _state.copyWith(excludeAlbumIds: next));
@@ -388,19 +392,7 @@ class _FilterSheetState extends State<_FilterSheet> {
             Text('Filter & Sort', style: theme.textTheme.titleLarge),
             const SizedBox(height: 16),
 
-            // ── Selected only ────────────────────────────────────────────────
-            if (widget.hasSelection) ...[
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Hide selected images'),
-                value: _state.hideSelected,
-                onChanged: (v) =>
-                    setState(() => _state = _state.copyWith(hideSelected: v)),
-              ),
-              const SizedBox(height: 4),
-            ],
-
-            // ── In these albums (include) ────────────────────────────────────
+            // ── In these albums (include) ──────────────────────────────────
             Text('Show only — in these albums',
                 style: theme.textTheme.titleSmall),
             const SizedBox(height: 6),
@@ -424,7 +416,7 @@ class _FilterSheetState extends State<_FilterSheet> {
               ),
             const SizedBox(height: 14),
 
-            // ── Not in these albums (exclude) ────────────────────────────────
+            // ── Not in these albums (exclude) ──────────────────────────────
             Text('Hide — in these albums',
                 style: theme.textTheme.titleSmall),
             const SizedBox(height: 6),
@@ -448,7 +440,7 @@ class _FilterSheetState extends State<_FilterSheet> {
               ),
             const SizedBox(height: 8),
 
-            // ── Favorite albums only ─────────────────────────────────────────
+            // ── Favorite albums only ───────────────────────────────────────
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('In favorite albums only'),
@@ -457,7 +449,7 @@ class _FilterSheetState extends State<_FilterSheet> {
                   () => _state = _state.copyWith(onlyFavoriteAlbums: v)),
             ),
 
-            // ── Min dimensions ───────────────────────────────────────────────
+            // ── Min dimensions ─────────────────────────────────────────────
             Row(
               children: [
                 Expanded(
@@ -481,7 +473,7 @@ class _FilterSheetState extends State<_FilterSheet> {
             ),
             const SizedBox(height: 14),
 
-            // ── Sort ─────────────────────────────────────────────────────────
+            // ── Sort ───────────────────────────────────────────────────────
             Text('Sort', style: theme.textTheme.titleSmall),
             const SizedBox(height: 6),
             Wrap(
@@ -497,7 +489,6 @@ class _FilterSheetState extends State<_FilterSheet> {
             ),
             const SizedBox(height: 20),
 
-            // ── Actions ──────────────────────────────────────────────────────
             FilledButton(
               onPressed: () {
                 final w = int.tryParse(_minWCtrl.text);

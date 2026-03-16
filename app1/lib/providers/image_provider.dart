@@ -12,10 +12,6 @@ class ImageFilterState {
   final Set<int> includeAlbumIds;
   final Set<int> excludeAlbumIds;
   final bool onlyFavoriteAlbums;
-
-  /// When true, only show images that are in the current selection pool.
-  final bool hideSelected;
-
   final int? minWidth;
   final int? minHeight;
   final SortOrder sortOrder;
@@ -24,7 +20,6 @@ class ImageFilterState {
     this.includeAlbumIds = const {},
     this.excludeAlbumIds = const {},
     this.onlyFavoriteAlbums = false,
-    this.hideSelected = false,
     this.minWidth,
     this.minHeight,
     this.sortOrder = SortOrder.dateDesc,
@@ -36,16 +31,12 @@ class ImageFilterState {
       onlyFavoriteAlbums;
 
   bool get hasAnyFilter =>
-      hasAlbumFilter ||
-      hideSelected ||
-      minWidth != null ||
-      minHeight != null;
+      hasAlbumFilter || minWidth != null || minHeight != null;
 
   ImageFilterState copyWith({
     Set<int>? includeAlbumIds,
     Set<int>? excludeAlbumIds,
     bool? onlyFavoriteAlbums,
-    bool? hideSelected,
     Object? minWidth = _sentinel,
     Object? minHeight = _sentinel,
     SortOrder? sortOrder,
@@ -54,7 +45,6 @@ class ImageFilterState {
       includeAlbumIds: includeAlbumIds ?? this.includeAlbumIds,
       excludeAlbumIds: excludeAlbumIds ?? this.excludeAlbumIds,
       onlyFavoriteAlbums: onlyFavoriteAlbums ?? this.onlyFavoriteAlbums,
-      hideSelected: hideSelected ?? this.hideSelected,
       minWidth: minWidth == _sentinel ? this.minWidth : minWidth as int?,
       minHeight: minHeight == _sentinel ? this.minHeight : minHeight as int?,
       sortOrder: sortOrder ?? this.sortOrder,
@@ -81,13 +71,9 @@ class DeviceImageProvider extends ChangeNotifier {
   bool _permissionGranted = false;
   bool get permissionGranted => _permissionGranted;
 
-  // Asset IDs cached per filter type to avoid redundant DB queries.
   Set<String> _includeAssetIds = {};
   Set<String> _excludeAssetIds = {};
   Set<String> _favoriteAssetIds = {};
-
-  // Injected from outside when onlySelected filter is active.
-  Set<String> _selectedAssetIds = {};
 
   Future<void> requestPermissionAndLoad() async {
     final result = await PhotoManager.requestPermissionExtend();
@@ -127,15 +113,6 @@ class DeviceImageProvider extends ChangeNotifier {
     await _applyFilters();
   }
 
-  /// Call this whenever the selection changes and onlySelected is active,
-  /// so the filtered list stays in sync.
-  Future<void> updateSelectedIds(Set<String> selectedIds) async {
-    _selectedAssetIds = selectedIds;
-    if (_filterState.hideSelected) {
-      await _applyFilters();
-    }
-  }
-
   Future<void> refreshForAlbumFilter(Set<int> albumIds) async {
     _includeAssetIds = await _db.getAssetIdsForAlbums(albumIds);
     await _applyFilters();
@@ -169,9 +146,6 @@ class DeviceImageProvider extends ChangeNotifier {
     }
     if (f.onlyFavoriteAlbums) {
       result = result.where((a) => _favoriteAssetIds.contains(a.id)).toList();
-    }
-    if (f.hideSelected) {
-      result = result.where((a) => !_selectedAssetIds.contains(a.id)).toList();
     }
     if (f.minWidth != null) {
       result = result.where((a) => a.width >= f.minWidth!).toList();
