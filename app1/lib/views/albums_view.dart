@@ -330,13 +330,19 @@ class _AlbumThumbState extends State<_AlbumThumb> {
     _load();
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Re-run whenever AlbumProvider notifies so the thumbnail stays fresh
+    // after images are added to or removed from this album.
+    _load();
+  }
+
   Future<void> _load() async {
     final ids = await context.read<AlbumProvider>().getAssetIds(widget.albumId);
-    if (ids.isNotEmpty && mounted) {
-      final entity = await AssetEntity.fromId(ids.first);
-      if (mounted) setState(() => _first = entity);
-    }
-    if (mounted) setState(() => _loaded = true);
+    if (!mounted) return;
+    final entity = ids.isNotEmpty ? await AssetEntity.fromId(ids.first) : null;
+    if (mounted) setState(() { _first = entity; _loaded = true; });
   }
 
   @override

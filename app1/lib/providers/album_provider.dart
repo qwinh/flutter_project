@@ -72,12 +72,11 @@ class AlbumProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Deletes multiple albums in a single batch — one DB round-trip per delete
-  /// but only one [notifyListeners] at the end.
+  /// Deletes multiple albums in a single DB statement, one [notifyListeners] at the end.
   Future<void> deleteAlbums(Set<int> ids) async {
     if (ids.isEmpty) return;
+    await _db.deleteAlbumsBatch(ids.toList());
     for (final id in ids) {
-      await _db.deleteAlbum(id);
       _albumTagIds.remove(id);
       _albumAssetIds.remove(id);
     }

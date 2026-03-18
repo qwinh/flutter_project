@@ -4,8 +4,6 @@ import 'package:flutter/foundation.dart';
 import 'package:photo_manager/photo_manager.dart';
 import '../db/database_helper.dart';
 
-export 'notifiers.dart' show FilteredListNotifier;
-
 enum SortOrder { dateDesc, dateAsc, nameAsc, nameDesc }
 
 class ImageFilterState {
@@ -114,7 +112,7 @@ class DeviceImageProvider extends ChangeNotifier {
       _favoriteAssetIds = await _db.getFavoriteAlbumAssetIds();
     }
 
-    List<AssetEntity> result = List.of(_all);
+    List<AssetEntity> result = _all;
 
     final allIds = {...f.includeAlbumIds, ...f.excludeAlbumIds};
     if (allIds.isNotEmpty) {
@@ -133,6 +131,9 @@ class DeviceImageProvider extends ChangeNotifier {
     if (f.minWidth != null) result = result.where((a) => a.width >= f.minWidth!).toList();
     if (f.minHeight != null) result = result.where((a) => a.height >= f.minHeight!).toList();
 
+    // Ensure result is a mutable copy before in-place sort (it may still be
+    // pointing at _all if no filter ran above).
+    if (identical(result, _all)) result = List.of(result);
     switch (f.sortOrder) {
       case SortOrder.dateDesc: result.sort((a, b) => b.createDateTime.compareTo(a.createDateTime));
       case SortOrder.dateAsc:  result.sort((a, b) => a.createDateTime.compareTo(b.createDateTime));

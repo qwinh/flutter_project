@@ -62,6 +62,8 @@ class SelectionProvider extends ChangeNotifier {
 
   // ── Single-item mutations ─────────────────────────────────────────────────
 
+  /// Adds if absent, removes if present. Marks entities dirty; call
+  /// [resolveEntities] afterwards if you need the resolved list.
   Future<void> toggle(String id) async {
     if (_selectedSet.contains(id)) {
       _assetIds = List.from(_assetIds)..remove(id);
@@ -79,32 +81,15 @@ class SelectionProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> select(String id) async {
-    if (_selectedSet.contains(id)) return;
-    _maxSortIdx++;
-    _assetIds = List.from(_assetIds)..add(id);
-    _selectedSet.add(id);
-    _entitiesDirty = true;
-    notifyListeners();
-    await _db.addToSelected(id, _maxSortIdx);
-  }
-
-  Future<void> deselect(String id) async {
-    if (!_selectedSet.contains(id)) return;
-    _assetIds = List.from(_assetIds)..remove(id);
-    _selectedSet.remove(id);
-    _entitiesDirty = true;
-    notifyListeners();
-    await _db.removeFromSelected(id);
-  }
-
-  /// Removes one item and keeps _entities in sync immediately (no re-resolve needed).
+  /// Removes one item and keeps [entities] in sync immediately without a full
+  /// re-resolve. Prefer this over [toggle] when the resolved list is visible
+  /// (e.g. ImagesSelectedView).
   Future<void> removeOne(String id) async {
     if (!_selectedSet.contains(id)) return;
     _assetIds = List.from(_assetIds)..remove(id);
     _selectedSet.remove(id);
     _entities = _entities.where((e) => e.id != id).toList();
-    // _entitiesDirty stays false — entities list is already correct
+    // _entitiesDirty intentionally stays false — entities is already correct.
     notifyListeners();
     await _db.removeFromSelected(id);
   }

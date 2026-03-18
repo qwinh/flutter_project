@@ -81,16 +81,10 @@ class DatabaseHelper {
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
-    if (oldVersion < 2) {
-      await db.execute(
-          'CREATE TABLE tags_new (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL DEFAULT \'\')');
-      await db.execute(
-          'INSERT OR IGNORE INTO tags_new (id, name, description) SELECT id, name, description FROM tags ORDER BY id ASC');
-      await db.execute('DROP TABLE tags');
-      await db.execute('ALTER TABLE tags_new RENAME TO tags');
-    }
+    // v2 added UNIQUE to tags.name; v3 added COLLATE NOCASE to that constraint.
+    // Both changes are expressed as a table rebuild. Upgrading from any older
+    // version only needs the final v3 schema — no intermediate rebuild required.
     if (oldVersion < 3) {
-      // Add COLLATE NOCASE to tags.name UNIQUE constraint via table rebuild.
       await db.execute(
           'CREATE TABLE tags_new (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE COLLATE NOCASE, description TEXT NOT NULL DEFAULT \'\')');
       await db.execute(
@@ -123,6 +117,17 @@ class DatabaseHelper {
   Future<void> deleteAlbum(int id) async {
     final db = await database;
     await db.delete('albums', where: 'id = ?', whereArgs: [id]);
+  }
+
+  /// Deletes multiple albums in a single statement.
+  Future<void> deleteAlbumsBatch(List<int> ids) async {
+    if (ids.isEmpty) return;
+    final db = await database;
+    final placeholders = List.filled(ids.length, '?').join(', ');
+    await db.rawDelete(
+      'DELETE FROM albums WHERE id IN ($placeholders)',
+      ids,
+    );
   }
 
   // ── Tags ────────────────────────────────────────────────────────────────────

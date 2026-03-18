@@ -68,7 +68,7 @@ class _ImagesViewState extends State<ImagesView> {
     _dragDeselectMode = sel.isSelected(vis[i].id);
     _preDragSelection = sel.assetIds.toSet();
     setState(() => _selectionMode = true);
-    if (!_dragDeselectMode) sel.select(vis[i].id);
+    if (!_dragDeselectMode) sel.addMultiple({vis[i].id});
   }
 
   void _onDragUpdate(int s, int e, List<pm.AssetEntity> vis) {

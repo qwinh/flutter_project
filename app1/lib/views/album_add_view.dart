@@ -202,9 +202,7 @@ class _AlbumAddViewState extends State<AlbumAddView> {
                           _previewEntities.map((e) => e.id).toSet(),
                       onConfirm: (picked) async {
                         final sp = context.read<SelectionProvider>();
-                        for (final e in picked) {
-                          await sp.select(e.id);
-                        }
+                        await sp.addMultiple(picked.map((e) => e.id).toSet());
                       },
                     ),
                   );
@@ -308,6 +306,9 @@ class _ImagePickerSheetState extends State<_ImagePickerSheet> {
   @override
   Widget build(BuildContext context) {
     final imgProv = context.watch<ip.DeviceImageProvider>();
+    // Intentionally uses .all rather than .filtered: the picker should always
+    // show the full device library so the user can pick any photo, regardless
+    // of what filter is active in the main Photos grid.
     final assets = imgProv.all;
 
     return DraggableScrollableSheet(
