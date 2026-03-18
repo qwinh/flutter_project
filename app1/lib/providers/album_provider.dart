@@ -22,7 +22,6 @@ class AlbumProvider extends ChangeNotifier {
   bool _loading = false;
   bool get loading => _loading;
 
-  // Weak back-reference so image mutations can invalidate the filter cache.
   DeviceImageProvider? _imageProv;
   void attachImageProvider(DeviceImageProvider p) => _imageProv = p;
 
@@ -30,8 +29,6 @@ class AlbumProvider extends ChangeNotifier {
     _loading = true;
     notifyListeners();
     _albums = await _db.getAllAlbums();
-    // Warm the tag-ID cache for ALL albums in one query so the view
-    // can filter by tags synchronously (no FutureBuilder needed).
     final bulk = await _db.getAllAlbumTagIds();
     _albumTagIds
       ..clear()
@@ -44,12 +41,8 @@ class AlbumProvider extends ChangeNotifier {
       {List<int> tagIds = const [],
       List<String> assetIds = const []}) async {
     final saved = await _db.insertAlbum(album);
-    if (tagIds.isNotEmpty) {
-      await _db.setTagsForAlbum(saved.id!, tagIds);
-    }
-    if (assetIds.isNotEmpty) {
-      await _db.addImagesToAlbum(saved.id!, assetIds);
-    }
+    if (tagIds.isNotEmpty) await _db.setTagsForAlbum(saved.id!, tagIds);
+    if (assetIds.isNotEmpty) await _db.addImagesToAlbum(saved.id!, assetIds);
     _albums = [..._albums, saved]..sort((a, b) => a.name.compareTo(b.name));
     _albumTagIds[saved.id!] = tagIds;
     _albumAssetIds[saved.id!] = List.of(assetIds);
@@ -79,6 +72,37 @@ class AlbumProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Deletes multiple albums in a single batch — one DB round-trip per delete
+  /// but only one [notifyListeners] at the end.
+  Future<void> deleteAlbums(Set<int> ids) async {
+    if (ids.isEmpty) return;
+    for (final id in ids) {
+      await _db.deleteAlbum(id);
+      _albumTagIds.remove(id);
+      _albumAssetIds.remove(id);
+    }
+    _albums = _albums.where((a) => !ids.contains(a.id)).toList();
+    notifyListeners();
+  }
+
+  /// Toggles isFavorite for multiple albums — one [notifyListeners] at the end.
+  Future<void> toggleFavoriteAlbums(Set<int> ids) async {
+    if (ids.isEmpty) return;
+    final updated = <AlbumModel>[];
+    for (final id in ids) {
+      final album = getById(id);
+      if (album == null) continue;
+      final toggled = album.copyWith(isFavorite: !album.isFavorite);
+      await _db.updateAlbum(toggled);
+      updated.add(toggled);
+    }
+    final updatedMap = {for (final a in updated) a.id!: a};
+    _albums = [
+      for (final a in _albums) updatedMap[a.id] ?? a,
+    ]..sort((a, b) => a.name.compareTo(b.name));
+    notifyListeners();
+  }
+
   Future<List<int>> getTagIds(int albumId) async {
     if (!_albumTagIds.containsKey(albumId)) {
       _albumTagIds[albumId] = await _db.getTagIdsForAlbum(albumId);
@@ -86,8 +110,6 @@ class AlbumProvider extends ChangeNotifier {
     return _albumTagIds[albumId]!;
   }
 
-  /// Returns tag IDs for [albumId] from the in-memory cache (populated by
-  /// [load]). Returns an empty list if the album has no cached entry yet.
   List<int> getTagIdsSync(int albumId) => _albumTagIds[albumId] ?? [];
 
   Future<List<String>> getAssetIds(int albumId) async {
@@ -99,7 +121,6 @@ class AlbumProvider extends ChangeNotifier {
 
   Future<void> addImagesToAlbum(int albumId, List<String> assetIds) async {
     await _db.addImagesToAlbum(albumId, assetIds);
-    // Re-fetch so the cache is warm before listeners rebuild.
     _albumAssetIds[albumId] = await _db.getAssetIdsForAlbum(albumId);
     _imageProv?.invalidateFilterCache();
     notifyListeners();
@@ -112,7 +133,6 @@ class AlbumProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Removes multiple images from an album in one DB transaction.
   Future<void> removeImagesFromAlbum(
       int albumId, List<String> assetIds) async {
     if (assetIds.isEmpty) return;

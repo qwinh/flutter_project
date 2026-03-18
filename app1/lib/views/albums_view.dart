@@ -32,9 +32,6 @@ class _AlbumsViewState extends State<AlbumsView> {
   Set<int> _tagExclude = {};
   bool _tagFilterAnd = true;
 
-  // NOTE: AlbumProvider and TagProvider are loaded eagerly in _AppRoot.
-  // No load() call needed here — just watch.
-
   @override
   void dispose() {
     _searchController.dispose();
@@ -51,9 +48,9 @@ class _AlbumsViewState extends State<AlbumsView> {
       final allTagIds = {..._tagFilter, ..._tagExclude};
       if (allTagIds.isNotEmpty) {
         final albumTagIds = ap.getTagIdsSync(a.id!).toSet();
-        Iterable<bool> predicates = allTagIds.map((id) {
-          final hasTag = albumTagIds.contains(id);
-          return _tagFilter.contains(id) ? hasTag : !hasTag;
+        final predicates = allTagIds.map((id) {
+          final has = albumTagIds.contains(id);
+          return _tagFilter.contains(id) ? has : !has;
         });
         final match = _tagFilterAnd
             ? predicates.every((p) => p)
@@ -64,47 +61,36 @@ class _AlbumsViewState extends State<AlbumsView> {
     }).toList();
   }
 
-  void _enterSelectionMode(int id) {
-    setState(() {
-      _selectionMode = true;
-      _selectedIds.add(id);
-    });
-  }
+  void _enterSelectionMode(int id) => setState(() {
+        _selectionMode = true;
+        _selectedIds.add(id);
+      });
 
-  void _exitSelectionMode() {
-    setState(() {
-      _selectionMode = false;
-      _selectedIds.clear();
-    });
-  }
+  void _exitSelectionMode() => setState(() {
+        _selectionMode = false;
+        _selectedIds.clear();
+      });
 
   Future<void> _bulkDelete() async {
+    final count = _selectedIds.length;
     final confirmed = await confirmDialog(
       context,
       title: 'Delete Albums',
-      message: 'Delete ${_selectedIds.length} album(s)?',
+      message: 'Delete $count album(s)?',
     );
-    if (!confirmed) return;
-
-    // Capture count before clearing selection.
-    final deletedCount = _selectedIds.length;
-    final ap = context.read<AlbumProvider>();
-    for (final id in List.of(_selectedIds)) {
-      await ap.deleteAlbum(id);
-    }
+    if (!confirmed || !mounted) return;
+    // Single notifyListeners at the end via deleteAlbums.
+    await context.read<AlbumProvider>().deleteAlbums(Set.of(_selectedIds));
     _exitSelectionMode();
-    await NotificationService.instance
-        .show('Albums deleted', '$deletedCount album(s) removed.');
+    await NotificationService.instance.show(
+        'Albums deleted', '$count album(s) removed.');
   }
 
   Future<void> _bulkToggleFavorite() async {
-    final ap = context.read<AlbumProvider>();
-    for (final id in _selectedIds) {
-      final album = ap.getById(id);
-      if (album != null) {
-        await ap.updateAlbum(album.copyWith(isFavorite: !album.isFavorite));
-      }
-    }
+    // Single notifyListeners at the end via toggleFavoriteAlbums.
+    await context
+        .read<AlbumProvider>()
+        .toggleFavoriteAlbums(Set.of(_selectedIds));
     _exitSelectionMode();
   }
 
@@ -182,16 +168,17 @@ class _AlbumsViewState extends State<AlbumsView> {
                         itemCount: filtered.length,
                         itemBuilder: (ctx, i) {
                           final album = filtered[i];
-                          final isSelected =
-                              _selectedIds.contains(album.id);
                           return _AlbumTile(
+                            // Stable key prevents Flutter from tearing down
+                            // _AlbumThumb state on selection changes.
+                            key: ValueKey('tile_${album.id}'),
                             album: album,
                             selectionMode: _selectionMode,
-                            isSelected: isSelected,
+                            isSelected: _selectedIds.contains(album.id),
                             onTap: () {
                               if (_selectionMode) {
                                 setState(() {
-                                  isSelected
+                                  _selectedIds.contains(album.id)
                                       ? _selectedIds.remove(album.id)
                                       : _selectedIds.add(album.id!);
                                 });
@@ -201,19 +188,19 @@ class _AlbumsViewState extends State<AlbumsView> {
                             },
                             onDoubleTap: () => context
                                 .read<AlbumProvider>()
-                                .updateAlbum(
-                                    album.copyWith(isFavorite: !album.isFavorite)),
+                                .updateAlbum(album.copyWith(
+                                    isFavorite: !album.isFavorite)),
                             onLongPress: () =>
                                 _enterSelectionMode(album.id!),
-                            onEdit: () => context.push(
-                                '/albums/${album.id}?edit=true'),
+                            onEdit: () =>
+                                context.push('/albums/${album.id}?edit=true'),
                             onDelete: () async {
                               final ok = await confirmDialog(
                                 context,
                                 title: 'Delete Album',
                                 message: 'Delete "${album.name}"?',
                               );
-                              if (ok) {
+                              if (ok && context.mounted) {
                                 await context
                                     .read<AlbumProvider>()
                                     .deleteAlbum(album.id!);
@@ -242,6 +229,7 @@ class _AlbumTile extends StatelessWidget {
   final VoidCallback onDelete;
 
   const _AlbumTile({
+    super.key,
     required this.album,
     required this.selectionMode,
     required this.isSelected,
@@ -254,8 +242,6 @@ class _AlbumTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final ap = context.read<AlbumProvider>();
-
     return Dismissible(
       key: ValueKey('album_${album.id}'),
       background: Container(
@@ -274,13 +260,12 @@ class _AlbumTile extends StatelessWidget {
         if (direction == DismissDirection.startToEnd) {
           onEdit();
           return false;
-        } else {
-          return confirmDialog(
-            context,
-            title: 'Delete Album',
-            message: 'Delete "${album.name}"?',
-          );
         }
+        return confirmDialog(
+          context,
+          title: 'Delete Album',
+          message: 'Delete "${album.name}"?',
+        );
       },
       onDismissed: (_) => onDelete(),
       child: GestureDetector(
@@ -289,7 +274,13 @@ class _AlbumTile extends StatelessWidget {
           message: 'Double-tap to toggle favorite',
           child: ListTile(
             selected: isSelected,
-            leading: _AlbumThumb(albumId: album.id!, provider: ap),
+            // _AlbumThumb is keyed by albumId; its state lives as long as
+            // the tile stays in the tree — selection changes no longer
+            // destroy and recreate it.
+            leading: _AlbumThumb(
+              key: ValueKey('thumb_${album.id}'),
+              albumId: album.id!,
+            ),
             title: Text(album.name),
             subtitle: album.description.isNotEmpty
                 ? Text(album.description,
@@ -315,11 +306,15 @@ class _AlbumTile extends StatelessWidget {
   }
 }
 
+// ── Album thumbnail ───────────────────────────────────────────────────────────
+
 /// Shows the first image of the album as a square thumbnail.
+/// Reads [AlbumProvider] directly so it doesn't need to be passed down.
+/// State is preserved across parent rebuilds as long as the widget's [key]
+/// stays stable (guaranteed by the ValueKey in _AlbumTile).
 class _AlbumThumb extends StatefulWidget {
   final int albumId;
-  final AlbumProvider provider;
-  const _AlbumThumb({required this.albumId, required this.provider});
+  const _AlbumThumb({super.key, required this.albumId});
 
   @override
   State<_AlbumThumb> createState() => _AlbumThumbState();
@@ -336,8 +331,8 @@ class _AlbumThumbState extends State<_AlbumThumb> {
   }
 
   Future<void> _load() async {
-    final ids = await widget.provider.getAssetIds(widget.albumId);
-    if (ids.isNotEmpty) {
+    final ids = await context.read<AlbumProvider>().getAssetIds(widget.albumId);
+    if (ids.isNotEmpty && mounted) {
       final entity = await AssetEntity.fromId(ids.first);
       if (mounted) setState(() => _first = entity);
     }
@@ -348,7 +343,9 @@ class _AlbumThumbState extends State<_AlbumThumb> {
   Widget build(BuildContext context) {
     if (!_loaded) {
       return const SizedBox(
-          width: 48, height: 48, child: CircularProgressIndicator(strokeWidth: 2));
+          width: 48,
+          height: 48,
+          child: CircularProgressIndicator(strokeWidth: 2));
     }
     if (_first == null) {
       return Container(
@@ -420,56 +417,74 @@ class _TagFilterBarState extends State<_TagFilterBar> {
     final hasFilter = widget.included.isNotEmpty || widget.excluded.isNotEmpty;
 
     final base = [...widget.tags]..sort((a, b) => a.name.compareTo(b.name));
-    final sorted = _sortActive ? [
-      ...base.where((t) => widget.included.contains(t.id) || widget.excluded.contains(t.id)),
-      ...base.where((t) => !widget.included.contains(t.id) && !widget.excluded.contains(t.id)),
-    ] : base;
+    final sorted = _sortActive
+        ? [
+            ...base.where(
+                (t) => widget.included.contains(t.id) || widget.excluded.contains(t.id)),
+            ...base.where(
+                (t) => !widget.included.contains(t.id) && !widget.excluded.contains(t.id)),
+          ]
+        : base;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        Row(children: [
-          Text('Tags', style: theme.textTheme.labelMedium?.copyWith(color: cs.onSurfaceVariant)),
-          const SizedBox(width: 6),
-          FilterPill(
-            label: widget.andMode ? 'ALL' : 'ANY',
-            color: cs.secondaryContainer, textColor: cs.onSecondaryContainer,
-            bold: true, onTap: () => widget.onModeChanged(!widget.andMode),
-          ),
-          const SizedBox(width: 6),
-          FilterPill(
-            label: _sortActive ? '● A-Z' : 'A-Z',
-            color: _sortActive ? cs.tertiaryContainer : cs.surfaceContainerHighest.withOpacity(0.5),
-            textColor: _sortActive ? cs.onTertiaryContainer : cs.onSurfaceVariant,
-            onTap: () => setState(() => _sortActive = !_sortActive),
-          ),
-          const Spacer(),
-          Text('tap · hold exclude', style: theme.textTheme.labelSmall
-              ?.copyWith(color: cs.onSurfaceVariant.withOpacity(0.5))),
-          if (hasFilter) ...[
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(children: [
+            Text('Tags',
+                style: theme.textTheme.labelMedium
+                    ?.copyWith(color: cs.onSurfaceVariant)),
             const SizedBox(width: 6),
-            GestureDetector(
-              onTap: () { widget.onIncludedChanged({}); widget.onExcludedChanged({}); },
-              child: Icon(Icons.close, size: 15, color: cs.onSurfaceVariant.withOpacity(0.7)),
+            FilterPill(
+              label: widget.andMode ? 'ALL' : 'ANY',
+              color: cs.secondaryContainer,
+              textColor: cs.onSecondaryContainer,
+              bold: true,
+              onTap: () => widget.onModeChanged(!widget.andMode),
             ),
-          ],
-        ]),
-        const SizedBox(height: 5),
-        FilterScrollList(
-          maxHeight: 180,
-          itemCount: sorted.length,
-          itemBuilder: (_, i) {
-            final t = sorted[i];
-            return FilterListRow(
-              label: t.name,
-              included: widget.included.contains(t.id),
-              excluded: widget.excluded.contains(t.id),
-              onTap: () => _tap(t.id!),
-              onLongPress: () => _hold(t.id!),
-            );
-          },
-        ),
-      ]),
+            const SizedBox(width: 6),
+            FilterPill(
+              label: _sortActive ? '● A-Z' : 'A-Z',
+              color: _sortActive
+                  ? cs.tertiaryContainer
+                  : cs.surfaceContainerHighest.withOpacity(0.5),
+              textColor: _sortActive ? cs.onTertiaryContainer : cs.onSurfaceVariant,
+              onTap: () => setState(() => _sortActive = !_sortActive),
+            ),
+            const Spacer(),
+            Text('tap · hold exclude',
+                style: theme.textTheme.labelSmall
+                    ?.copyWith(color: cs.onSurfaceVariant.withOpacity(0.5))),
+            if (hasFilter) ...[
+              const SizedBox(width: 6),
+              GestureDetector(
+                onTap: () {
+                  widget.onIncludedChanged({});
+                  widget.onExcludedChanged({});
+                },
+                child: Icon(Icons.close,
+                    size: 15, color: cs.onSurfaceVariant.withOpacity(0.7)),
+              ),
+            ],
+          ]),
+          const SizedBox(height: 5),
+          FilterScrollList(
+            maxHeight: 180,
+            itemCount: sorted.length,
+            itemBuilder: (_, i) {
+              final t = sorted[i];
+              return FilterListRow(
+                label: t.name,
+                included: widget.included.contains(t.id),
+                excluded: widget.excluded.contains(t.id),
+                onTap: () => _tap(t.id!),
+                onLongPress: () => _hold(t.id!),
+              );
+            },
+          ),
+        ],
+      ),
     );
   }
 }
