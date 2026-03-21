@@ -1,4 +1,3 @@
-// lib/views/album_view.dart
 // Shows album details: name, description, favorite, tags, and a grid of images.
 // Supports inline editing (toggle with edit icon).
 
@@ -10,9 +9,7 @@ import 'package:provider/provider.dart';
 import '../models/models.dart';
 import '../providers/album_provider.dart';
 import '../providers/notifiers.dart';
-import '../providers/tag_provider.dart';
 import '../services/notification_service.dart';
-import '../widgets/tag_picker.dart';
 import '../widgets/widgets.dart';
 
 class AlbumView extends StatefulWidget {

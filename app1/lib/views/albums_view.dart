@@ -1,4 +1,3 @@
-// lib/views/albums_view.dart
 // Shows all albums as list tiles.
 // Long press → multi-select mode.
 // Swipe left-to-right → edit, right-to-left → delete.
@@ -12,8 +11,6 @@ import '../models/models.dart';
 import '../providers/album_provider.dart';
 import '../providers/tag_provider.dart';
 import '../services/notification_service.dart';
-import '../widgets/description_subtitle.dart';
-import '../widgets/filterable_list.dart';
 import '../widgets/widgets.dart';
 
 class AlbumsView extends StatefulWidget {

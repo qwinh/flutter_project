@@ -1,4 +1,3 @@
-// lib/views/images_selected_view.dart
 // Shows the global selected images pool.
 // Drag-and-drop to reorder (in-memory only; persisted on save).
 // Actions: remove one, clear all, add to existing album, create new album.

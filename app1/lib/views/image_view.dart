@@ -1,4 +1,3 @@
-// lib/views/image_view.dart
 // Full-screen viewer. Swipe left/right to navigate the list from the
 // previous context (passed via FilteredListNotifier or album).
 // Shows filename, dimensions, date on tap.

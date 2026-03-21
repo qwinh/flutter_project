@@ -1,4 +1,3 @@
-// lib/views/tags_view.dart
 // Shows all tags in a list.
 // Inline editing: tap edit icon → text fields appear in the tile.
 // Add: FAB expands an inline form at the top.

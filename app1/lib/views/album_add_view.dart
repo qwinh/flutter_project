@@ -1,4 +1,3 @@
-// lib/views/album_add_view.dart
 // Create a new album. If navigated from ImagesSelectedView, the selected
 // images pool is pre-filled. Commits create the album and clear the pool.
 
@@ -12,10 +11,7 @@ import '../models/models.dart';
 import '../providers/album_provider.dart';
 import '../providers/image_provider.dart' as ip;
 import '../providers/selection_provider.dart';
-import '../providers/tag_provider.dart';
 import '../services/notification_service.dart';
-import '../widgets/sheet_handle.dart';
-import '../widgets/tag_picker.dart';
 import '../widgets/widgets.dart';
 
 class AlbumAddView extends StatefulWidget {

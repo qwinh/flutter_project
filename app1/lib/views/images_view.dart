@@ -1,5 +1,3 @@
-// lib/views/images_view.dart
-
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:photo_manager/photo_manager.dart' as pm;
@@ -9,8 +7,6 @@ import '../providers/album_provider.dart';
 import '../providers/image_provider.dart' as ip;
 import '../providers/notifiers.dart';
 import '../providers/selection_provider.dart';
-import '../widgets/filterable_list.dart';
-import '../widgets/sheet_handle.dart';
 import '../widgets/widgets.dart';
 import '../widgets/drag_select_grid.dart';
 
