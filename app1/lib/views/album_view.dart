@@ -12,6 +12,7 @@ import '../providers/album_provider.dart';
 import '../providers/notifiers.dart';
 import '../providers/tag_provider.dart';
 import '../services/notification_service.dart';
+import '../widgets/tag_picker.dart';
 import '../widgets/widgets.dart';
 
 class AlbumView extends StatefulWidget {
@@ -70,7 +71,6 @@ class _AlbumViewState extends State<AlbumView> {
     final assetIds = await ap.getAssetIds(widget.albumId);
     final tagIds = await ap.getTagIds(widget.albumId);
 
-    // Resolve all AssetEntities in parallel.
     final resolved = await Future.wait(
       assetIds.map((id) => AssetEntity.fromId(id)),
     );
@@ -107,27 +107,21 @@ class _AlbumViewState extends State<AlbumView> {
 
     if (mounted) {
       setState(() => _editMode = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Album updated')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Album updated')));
     }
   }
 
+  // Shared via tag_picker.dart — no longer duplicated with album_add_view.
   Future<void> _pickTagsDialog() async {
-    final tp = context.read<TagProvider>();
-    final result = await showDialog<List<int>>(
-      context: context,
-      builder: (_) => TagPickerDialog(
-        allTags: tp.tags.map((t) => (id: t.id!, name: t.name)).toList(),
-        initialSelected: _tagIds.toSet(),
-      ),
-    );
+    final result =
+        await showTagPickerDialog(context, currentTagIds: _tagIds);
     if (result != null) setState(() => _tagIds = result);
   }
 
   Future<void> _removeSelectedImages() async {
     final ap = context.read<AlbumProvider>();
     final toRemove = List.of(_selectedAssetIds);
-    // Single bulk DB transaction instead of N sequential calls.
     await ap.removeImagesFromAlbum(widget.albumId, toRemove);
     final removeSet = toRemove.toSet();
     setState(() {
@@ -142,7 +136,6 @@ class _AlbumViewState extends State<AlbumView> {
   @override
   Widget build(BuildContext context) {
     final ap = context.watch<AlbumProvider>();
-    final tp = context.watch<TagProvider>();
     final album = ap.getById(widget.albumId);
 
     if (album == null) {
@@ -152,16 +145,12 @@ class _AlbumViewState extends State<AlbumView> {
       );
     }
 
-    final tagNames = _tagIds
-        .map((id) => tp.getById(id)?.name)
-        .whereType<String>()
-        .toList();
+    // Resolved here once; no longer duplicated in album_add_view.
+    final tagNames = resolveTagNames(context, _tagIds);
 
     return Scaffold(
       appBar: AppBar(
-        title: _editMode
-            ? const Text('Edit Album')
-            : Text(album.name),
+        title: _editMode ? const Text('Edit Album') : Text(album.name),
         actions: _selectionMode
             ? [
                 IconButton(
@@ -217,8 +206,7 @@ class _AlbumViewState extends State<AlbumView> {
                       delegate: SliverChildBuilderDelegate(
                         (ctx, i) {
                           final e = _entities[i];
-                          final selected =
-                              _selectedAssetIds.contains(e.id);
+                          final selected = _selectedAssetIds.contains(e.id);
                           final selIdx = _selectedAssetIds.indexOf(e.id);
                           return AssetThumb(
                             asset: e,
@@ -232,7 +220,8 @@ class _AlbumViewState extends State<AlbumView> {
                                       : _selectedAssetIds.add(e.id);
                                 });
                               } else {
-                                context.read<FilteredListNotifier>()
+                                context
+                                    .read<FilteredListNotifier>()
                                     .setList(_entities);
                                 context.push('/images/view/$i');
                               }
@@ -297,8 +286,7 @@ class _ReadOnlyInfo extends StatelessWidget {
           const SizedBox(height: 8),
           Wrap(
             spacing: 6,
-            children:
-                tagNames.map((n) => Chip(label: Text(n))).toList(),
+            children: tagNames.map((n) => Chip(label: Text(n))).toList(),
           ),
         ],
       ],
@@ -349,7 +337,8 @@ class _EditForm extends StatelessWidget {
             const Text('Tags: '),
             Expanded(
               child: tagNames.isEmpty
-                  ? const Text('None', style: TextStyle(color: Colors.grey))
+                  ? const Text('None',
+                      style: TextStyle(color: Colors.grey))
                   : Wrap(
                       spacing: 4,
                       children: tagNames

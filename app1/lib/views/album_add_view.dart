@@ -14,6 +14,8 @@ import '../providers/image_provider.dart' as ip;
 import '../providers/selection_provider.dart';
 import '../providers/tag_provider.dart';
 import '../services/notification_service.dart';
+import '../widgets/sheet_handle.dart';
+import '../widgets/tag_picker.dart';
 import '../widgets/widgets.dart';
 
 class AlbumAddView extends StatefulWidget {
@@ -29,7 +31,6 @@ class _AlbumAddViewState extends State<AlbumAddView> {
   bool _isFavorite = false;
   List<int> _tagIds = [];
 
-  // Images that will go into the new album (taken from selection pool)
   List<AssetEntity> _previewEntities = [];
   bool _submitting = false;
 
@@ -39,9 +40,6 @@ class _AlbumAddViewState extends State<AlbumAddView> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _syncFromSelection());
   }
 
-  /// Resolves AssetEntity objects from the selection pool and mirrors them
-  /// into [_previewEntities]. Safe to call multiple times (e.g. on return
-  /// from the "Add more" images screen).
   Future<void> _syncFromSelection() async {
     final sp = context.read<SelectionProvider>();
     await sp.resolveEntities();
@@ -75,7 +73,6 @@ class _AlbumAddViewState extends State<AlbumAddView> {
 
     final ap = context.read<AlbumProvider>();
     final sp = context.read<SelectionProvider>();
-
     final assetIds = _previewEntities.map((e) => e.id).toList();
 
     await ap.addAlbum(
@@ -87,35 +84,23 @@ class _AlbumAddViewState extends State<AlbumAddView> {
       assetIds: assetIds,
     );
 
-    // Clear the global selection pool after committing
     await sp.clearAll();
-
     await NotificationService.instance.show('Album created', '"$name" created.');
 
-    if (mounted) {
-      context.pop();
-    }
+    if (mounted) context.pop();
   }
 
+  // Shared via tag_picker.dart — no longer duplicated with album_view.
   Future<void> _pickTagsDialog() async {
-    final tp = context.read<TagProvider>();
-    final result = await showDialog<List<int>>(
-      context: context,
-      builder: (_) => TagPickerDialog(
-        allTags: tp.tags.map((t) => (id: t.id!, name: t.name)).toList(),
-        initialSelected: _tagIds.toSet(),
-      ),
-    );
+    final result =
+        await showTagPickerDialog(context, currentTagIds: _tagIds);
     if (result != null) setState(() => _tagIds = result);
   }
 
   @override
   Widget build(BuildContext context) {
-    final tp = context.watch<TagProvider>();
-    final tagNames = _tagIds
-        .map((id) => tp.getById(id)?.name)
-        .whereType<String>()
-        .toList();
+    // resolveTagNames also shared via tag_picker.dart.
+    final tagNames = resolveTagNames(context, _tagIds);
 
     return Scaffold(
       appBar: AppBar(
@@ -202,7 +187,8 @@ class _AlbumAddViewState extends State<AlbumAddView> {
                           _previewEntities.map((e) => e.id).toSet(),
                       onConfirm: (picked) async {
                         final sp = context.read<SelectionProvider>();
-                        await sp.addMultiple(picked.map((e) => e.id).toSet());
+                        await sp.addMultiple(
+                            picked.map((e) => e.id).toSet());
                       },
                     ),
                   );
@@ -288,16 +274,15 @@ class _ImagePickerSheetState extends State<_ImagePickerSheet> {
   @override
   void initState() {
     super.initState();
-    // Pre-tick anything already in the selection pool so state is consistent.
     _picked.addAll(widget.alreadySelected);
   }
 
   Future<void> _confirm(List<AssetEntity> all) async {
     setState(() => _confirming = true);
-    // Only pass newly picked items (not what was already in the pool).
     final newOnes = all
         .where((e) =>
-            _picked.contains(e.id) && !widget.alreadySelected.contains(e.id))
+            _picked.contains(e.id) &&
+            !widget.alreadySelected.contains(e.id))
         .toList();
     await widget.onConfirm(newOnes);
     if (mounted) Navigator.pop(context);
@@ -306,9 +291,6 @@ class _ImagePickerSheetState extends State<_ImagePickerSheet> {
   @override
   Widget build(BuildContext context) {
     final imgProv = context.watch<ip.DeviceImageProvider>();
-    // Intentionally uses .all rather than .filtered: the picker should always
-    // show the full device library so the user can pick any photo, regardless
-    // of what filter is active in the main Photos grid.
     final assets = imgProv.all;
 
     return DraggableScrollableSheet(
@@ -319,21 +301,8 @@ class _ImagePickerSheetState extends State<_ImagePickerSheet> {
       builder: (_, scrollCtrl) {
         return Column(
           children: [
-            // Handle
-            Center(
-              child: Container(
-                margin: const EdgeInsets.symmetric(vertical: 10),
-                width: 36,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: Theme.of(context)
-                      .colorScheme
-                      .onSurfaceVariant
-                      .withOpacity(0.3),
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-            ),
+            // Shared SheetHandle — no longer an inline duplicate.
+            const SheetHandle(),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
               child: Row(
@@ -373,7 +342,9 @@ class _ImagePickerSheetState extends State<_ImagePickerSheet> {
                         final selected = _picked.contains(e.id);
                         return GestureDetector(
                           onTap: () => setState(() {
-                            selected ? _picked.remove(e.id) : _picked.add(e.id);
+                            selected
+                                ? _picked.remove(e.id)
+                                : _picked.add(e.id);
                           }),
                           child: Stack(
                             fit: StackFit.expand,

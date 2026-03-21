@@ -1,5 +1,10 @@
 // lib/widgets/widgets.dart
 // Reusable small widgets.
+// Re-exports so callers can import just 'widgets/widgets.dart' for everything.
+export 'description_subtitle.dart';
+export 'filterable_list.dart';
+export 'sheet_handle.dart';
+export 'tag_picker.dart';
 
 import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';

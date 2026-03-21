@@ -32,8 +32,6 @@ class _TagsViewState extends State<TagsView> {
   final _addDescCtrl = TextEditingController();
   String? _addNameError;
 
-  // NOTE: TagProvider is loaded eagerly in _AppRoot. No load() call needed here.
-
   @override
   void dispose() {
     _searchCtrl.dispose();
@@ -117,12 +115,24 @@ class _TagsViewState extends State<TagsView> {
             ),
           ),
 
-          if (_showAddForm) _AddTagForm(
-            nameCtrl: _addNameCtrl,
-            descCtrl: _addDescCtrl,
-            nameError: _addNameError,
-            onAdd: _addTag,
-          ),
+          // ── Add form uses the shared _TagFormFields ────────────────────
+          if (_showAddForm)
+            Card(
+              margin: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: _TagFormFields(
+                  nameCtrl: _addNameCtrl,
+                  descCtrl: _addDescCtrl,
+                  nameError: _addNameError,
+                  nameLabel: 'New tag name *',
+                  autofocusName: true,
+                  submitLabel: 'Add Tag',
+                  submitIcon: Icons.add,
+                  onSubmit: _addTag,
+                ),
+              ),
+            ),
 
           Expanded(
             child: tags.isEmpty
@@ -135,13 +145,20 @@ class _TagsViewState extends State<TagsView> {
                       final usage = tp.usageCount(tag.id!);
 
                       return isEditing
-                          ? _EditingTile(
-                              nameCtrl: _editNameCtrl,
-                              descCtrl: _editDescCtrl,
-                              nameError: _editNameError,
-                              onSave: () => _saveEdit(tag),
-                              onCancel: () =>
-                                  setState(() => _editingId = null),
+                          // ── Edit form uses the same _TagFormFields ─────
+                          ? Padding(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 8),
+                              child: _TagFormFields(
+                                nameCtrl: _editNameCtrl,
+                                descCtrl: _editDescCtrl,
+                                nameError: _editNameError,
+                                nameLabel: 'Tag name',
+                                submitLabel: 'Save',
+                                onSubmit: () => _saveEdit(tag),
+                                onCancel: () =>
+                                    setState(() => _editingId = null),
+                              ),
                             )
                           : _TagTile(
                               tag: tag,
@@ -189,19 +206,14 @@ class _TagTile extends StatelessWidget {
     return ListTile(
       leading: const Icon(Icons.label_outline),
       title: Text(tag.name),
-      subtitle: tag.description.isNotEmpty
-          ? Text(tag.description,
-              maxLines: 1, overflow: TextOverflow.ellipsis)
-          : null,
+      subtitle: descriptionSubtitle(tag.description),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
             decoration: BoxDecoration(
-              color:
-                  Theme.of(context).colorScheme.secondaryContainer,
+              color: Theme.of(context).colorScheme.secondaryContainer,
               borderRadius: BorderRadius.circular(12),
             ),
             child: Text(
@@ -211,125 +223,91 @@ class _TagTile extends StatelessWidget {
           ),
           const SizedBox(width: 4),
           IconButton(
-              icon: const Icon(Icons.edit_outlined),
-              onPressed: onEdit),
+              icon: const Icon(Icons.edit_outlined), onPressed: onEdit),
           IconButton(
-              icon: const Icon(Icons.delete_outline),
-              onPressed: onDelete),
+              icon: const Icon(Icons.delete_outline), onPressed: onDelete),
         ],
       ),
     );
   }
 }
 
-// ── Inline editing tile ────────────────────────────────────────────────────────
+// ── Shared tag form fields (add & edit) ───────────────────────────────────────
+// Replaces the near-identical _EditingTile and _AddTagForm.
 
-class _EditingTile extends StatelessWidget {
+class _TagFormFields extends StatelessWidget {
   final TextEditingController nameCtrl;
   final TextEditingController descCtrl;
   final String? nameError;
-  final VoidCallback onSave;
-  final VoidCallback onCancel;
+  final String nameLabel;
+  final bool autofocusName;
+  final String submitLabel;
+  final IconData? submitIcon;
+  final VoidCallback onSubmit;
+  final VoidCallback? onCancel;
 
-  const _EditingTile({
+  const _TagFormFields({
     required this.nameCtrl,
     required this.descCtrl,
+    required this.nameLabel,
+    required this.submitLabel,
+    required this.onSubmit,
     this.nameError,
-    required this.onSave,
-    required this.onCancel,
+    this.autofocusName = false,
+    this.submitIcon,
+    this.onCancel,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: Column(
-        children: [
-          TextField(
-            controller: nameCtrl,
-            decoration: InputDecoration(
-              labelText: 'Tag name',
-              border: const OutlineInputBorder(),
-              isDense: true,
-              errorText: nameError,
-            ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        TextField(
+          controller: nameCtrl,
+          autofocus: autofocusName,
+          decoration: InputDecoration(
+            labelText: nameLabel,
+            border: const OutlineInputBorder(),
+            isDense: true,
+            errorText: nameError,
           ),
-          const SizedBox(height: 6),
-          TextField(
-            controller: descCtrl,
-            decoration: const InputDecoration(
-              labelText: 'Description',
-              border: OutlineInputBorder(),
-              isDense: true,
-            ),
+        ),
+        const SizedBox(height: 6),
+        TextField(
+          controller: descCtrl,
+          decoration: const InputDecoration(
+            labelText: 'Description',
+            border: OutlineInputBorder(),
+            isDense: true,
           ),
-          const SizedBox(height: 6),
+        ),
+        const SizedBox(height: 8),
+        if (onCancel != null)
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
               TextButton(onPressed: onCancel, child: const Text('Cancel')),
               const SizedBox(width: 8),
-              FilledButton(onPressed: onSave, child: const Text('Save')),
+              if (submitIcon != null)
+                FilledButton.icon(
+                  onPressed: onSubmit,
+                  icon: Icon(submitIcon),
+                  label: Text(submitLabel),
+                )
+              else
+                FilledButton(onPressed: onSubmit, child: Text(submitLabel)),
             ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ── Inline add form ────────────────────────────────────────────────────────────
-
-class _AddTagForm extends StatelessWidget {
-  final TextEditingController nameCtrl;
-  final TextEditingController descCtrl;
-  final String? nameError;
-  final VoidCallback onAdd;
-
-  const _AddTagForm({
-    required this.nameCtrl,
-    required this.descCtrl,
-    this.nameError,
-    required this.onAdd,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.fromLTRB(12, 4, 12, 8),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            TextField(
-              controller: nameCtrl,
-              decoration: InputDecoration(
-                labelText: 'New tag name *',
-                border: const OutlineInputBorder(),
-                isDense: true,
-                errorText: nameError,
-              ),
-              autofocus: true,
-            ),
-            const SizedBox(height: 6),
-            TextField(
-              controller: descCtrl,
-              decoration: const InputDecoration(
-                labelText: 'Description',
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
-            ),
-            const SizedBox(height: 8),
-            FilledButton.icon(
-              onPressed: onAdd,
-              icon: const Icon(Icons.add),
-              label: const Text('Add Tag'),
-            ),
-          ],
-        ),
-      ),
+          )
+        else if (submitIcon != null)
+          FilledButton.icon(
+            onPressed: onSubmit,
+            icon: Icon(submitIcon),
+            label: Text(submitLabel),
+          )
+        else
+          FilledButton(onPressed: onSubmit, child: Text(submitLabel)),
+      ],
     );
   }
 }
